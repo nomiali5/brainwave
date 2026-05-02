@@ -247,6 +247,12 @@ async function initPyodide() {
   if (pyodide) return pyodide;
   setStatus('Loading Pyodide WebAssembly runtime…');
   pyodide = await loadPyodide();
+  // Attempt to grow the WASM heap so larger files can be processed
+  try {
+    pyodide._module.wasmMemory.grow(4096); // +256 MiB (each page = 64 KiB)
+  } catch(e) {
+    console.warn('Could not grow WASM memory:', e);
+  }
   setStatus('Installing h5py and numpy…');
   await pyodide.loadPackage(['h5py', 'numpy']);
   return pyodide;
@@ -282,6 +288,15 @@ async function handleFile(file) {
   }
 
   try {
+    const MAX_FILE_SIZE_MB = 200;
+    if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+      throw new Error(
+        `File size (${(file.size / 1024 / 1024).toFixed(1)} MB) exceeds the ` +
+        `${MAX_FILE_SIZE_MB} MB limit for in-browser processing. ` +
+        `Consider using a smaller recording interval or a BXR results file instead.`
+      );
+    }
+
     const py = await initPyodide();
     setStatus('Reading file…');
     const buffer = await file.arrayBuffer();
@@ -527,8 +542,12 @@ import h5py
 
 def parse_file(file_bytes):
     result = {}
+    data = None
+    buf  = None
+    f    = None
     try:
-        buf = io.BytesIO(bytes(file_bytes))
+        data = file_bytes.tobytes()
+        buf  = io.BytesIO(data)
         try:
             f = h5py.File(buf, 'r')
         except Exception:
@@ -552,7 +571,6 @@ def parse_file(file_bytes):
         # ── detect file type ─────────────────────────────────────────────
         has_well = 'Well_A1' in f
         if not has_well:
-            f.close()
             return json.dumps({"error": "No Well_A1 data found. Multi-well files show Well_A1 only."})
 
         well = f['Well_A1']
@@ -629,12 +647,10 @@ def parse_file(file_bytes):
 
             if has_sparse_raw or has_wavelet_raw:
                 result['info'] = 'Compressed raw format detected — raw signal preview not available; showing metadata only.'
-                f.close()
                 return json.dumps(result)
 
             if not has_raw:
                 result['warning'] = 'No Raw dataset found in Well_A1.'
-                f.close()
                 return json.dumps(result)
 
             raw_dataset = well['Raw']
@@ -651,7 +667,6 @@ def parse_file(file_bytes):
             n_channels_stored = len(stored_ch_idxs) if stored_ch_idxs else num_channels
             if n_channels_stored == 0:
                 result['warning'] = 'No channel information available.'
-                f.close()
                 return json.dumps(result)
 
             bytes_per_frame  = n_channels_stored * 2   # int16 = 2 bytes per sample
@@ -685,10 +700,15 @@ def parse_file(file_bytes):
 
             result['raw_signal'] = {'channels': channels_out}
 
-        f.close()
-
     except Exception as e:
         result['error'] = 'Parsing failed: ' + traceback.format_exc()
+    finally:
+        if f is not None:
+            f.close()
+        if data is not None:
+            del data
+        if buf is not None:
+            del buf
 
     return json.dumps(result)
 
