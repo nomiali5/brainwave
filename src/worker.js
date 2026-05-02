@@ -291,9 +291,9 @@ async function handleFile(file) {
     const MAX_FILE_SIZE_MB = 200;
     if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
       throw new Error(
-        `File size (${(file.size / 1024 / 1024).toFixed(1)} MB) exceeds the ` +
-        `${MAX_FILE_SIZE_MB} MB limit for in-browser processing. ` +
-        `Consider using a smaller recording interval or a BXR results file instead.`
+        'File size (' + (file.size / 1024 / 1024).toFixed(1) + ' MB) exceeds the ' +
+        MAX_FILE_SIZE_MB + ' MB limit for in-browser processing. ' +
+        'Consider using a smaller recording interval or a BXR results file instead.'
       );
     }
 
