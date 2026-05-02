@@ -103,6 +103,65 @@ In the [Cloudflare dashboard](https://dash.cloudflare.com/), go to **Workers & P
 
 ---
 
+## Test Files
+
+The repository ships two helper scripts for generating and verifying
+realistic sample files that can be dropped straight into the viewer.
+
+### What the files simulate
+
+| Property | Value |
+|----------|-------|
+| Electrode array | 4 × 4 patch (16 channels) from a 64 × 64 HD-MEA grid |
+| Recording duration | 3 seconds (3 × 18 000 frames) |
+| Sampling rate | 18 000 Hz |
+| Spontaneously active neurons | 4 (channels 0, 65, 128, 194 — one per quadrant) |
+| Firing rate (active channels) | 5 spikes / second |
+| Background signal | Gaussian noise (σ = 200 digital units ≈ 25 µV after conversion) + 10 Hz sinusoidal LFP |
+
+`sample_data.brw` — continuous raw voltage traces  
+`sample_data.bxr` — sorted spike events + biphasic waveforms (150 spikes total)
+
+### Generate the files
+
+```bash
+# Install Python dependencies (Python 3.10+ recommended)
+pip install -r requirements.txt
+
+# Create sample_data.brw and sample_data.bxr in the current directory
+python generate_test_files.py
+```
+
+Expected output:
+
+```
+Generating sample_data.brw...
+  - 16 channels, 18000 Hz, 3 seconds (54000 frames)
+  - 3 data chunks
+  - Synthetic spikes injected on channels: 0, 65, 128, 194
+  ✓ sample_data.brw written (X.X MB)
+
+Generating sample_data.bxr...
+  - 150 spikes across 3 seconds
+  - 4 active channels with regular spiking
+  - Waveform length: 58 frames
+  ✓ sample_data.bxr written (X.X KB)
+
+Done. Files ready for upload to the visualization website.
+```
+
+### Verify the files
+
+```bash
+python verify_files.py
+```
+
+This reopens both files with `h5py` and prints a full summary of every
+dataset (shape, dtype, value range, first bytes) and every attribute, so
+you can confirm structural validity before uploading.
+
+---
+
 ## License
 
 MIT
