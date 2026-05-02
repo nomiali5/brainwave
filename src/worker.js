@@ -255,6 +255,7 @@ async function initPyodide() {
   }
   setStatus('Installing h5py and numpy…');
   await pyodide.loadPackage(['h5py', 'numpy']);
+  console.info('[Brainwave] Pyodide version:', pyodide.version);
   return pyodide;
 }
 
@@ -302,8 +303,18 @@ async function handleFile(file) {
     const buffer = await file.arrayBuffer();
     const uint8  = new Uint8Array(buffer);
 
-    setStatus('Parsing ' + file.name + '…');
-    py.globals.set('file_bytes', uint8);
+    setStatus('Transferring to Python runtime…');
+    // Encode as base64 string so Python receives a plain str with no JsProxy issues.
+    // This avoids .tobytes() / .to_py() version-compatibility problems across Pyodide releases.
+    let binary = '';
+    const chunkSize = 8192; // chosen to stay well within apply() argument limits on all browsers
+    for (let i = 0; i < uint8.length; i += chunkSize) {
+      binary += String.fromCharCode.apply(null, uint8.subarray(i, i + chunkSize));
+    }
+    py.globals.set('file_data_b64', btoa(binary));
+    py.globals.set('file_name', file.name);
+
+    setStatus('Parsing HDF5 structure…');
 
     const result = await py.runPythonAsync(PYTHON_PARSER);
     const pythonResult = result instanceof py.ffi.PyProxy ? result.toJs({ dict_converter: Object.fromEntries }) : result;
@@ -313,6 +324,7 @@ async function handleFile(file) {
     if (parsedData.warning) showWarn(parsedData.warning);
     if (parsedData.info)    showInfo(parsedData.info);
 
+    setStatus('Rendering charts…');
     hideStatus();
     renderInfoPanel(parsedData);
     renderCharts(parsedData);
@@ -335,6 +347,9 @@ function renderInfoPanel(d) {
   html += infoCard('Duration',         meta.duration_sec != null ? meta.duration_sec.toFixed(2) + ' s' : '—');
   if (meta.file_type === 'BXR') {
     html += infoCard('Spikes Detected', meta.num_spikes != null ? meta.num_spikes.toLocaleString() : '—');
+  }
+  if (pyodide) {
+    html += infoCard('Pyodide', pyodide.version);
   }
   infoGrid.innerHTML = html;
   infoPanel.classList.add('visible');
@@ -536,18 +551,23 @@ function renderWaveformChart(spikeWaveforms, chIdx, samplingRate) {
 
 // ─── Python parser (runs in Pyodide) ────────────────────────────────────────
 const PYTHON_PARSER = \`
-import io, json, traceback
+import io, json, traceback, base64
 import numpy as np
 import h5py
 
-def parse_file(file_bytes):
+def parse_file():
     result = {}
-    data = None
     buf  = None
     f    = None
     try:
-        data = file_bytes.tobytes()
-        buf  = io.BytesIO(data)
+        # file_data_b64 is a plain Python str (base64-encoded file bytes).
+        # Using base64 transfer avoids JsProxy .tobytes()/.to_py() version
+        # compatibility issues across all Pyodide releases.
+        try:
+            raw_bytes = base64.b64decode(file_data_b64)
+        except Exception as decode_err:
+            return json.dumps({"error": "File data missing or corrupt — base64 decode failed: " + str(decode_err)})
+        buf  = io.BytesIO(raw_bytes)
         try:
             f = h5py.File(buf, 'r')
         except Exception:
@@ -705,14 +725,12 @@ def parse_file(file_bytes):
     finally:
         if f is not None:
             f.close()
-        if data is not None:
-            del data
         if buf is not None:
             del buf
 
     return json.dumps(result)
 
-parse_file(file_bytes)
+parse_file()
 \`;
 
 // Bootstrap: pre-warm Pyodide on page load (non-blocking)
