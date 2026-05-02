@@ -575,10 +575,8 @@ def parse_file(file_bytes):
                 last_frame = int(toc[-1, 1]) if toc.ndim == 2 else int(toc[-1])
                 duration_sec = last_frame / sampling_rate if sampling_rate > 0 else None
         elif 'RawTOC' in well:
-            raw_toc = well['RawTOC'][:]
-            if raw_toc.size > 0:
-                end_frames = raw_toc[:, 1] if raw_toc.ndim == 2 else raw_toc
-                duration_sec = float(end_frames[-1]) / sampling_rate if sampling_rate > 0 else None
+            # duration will be computed from n_frames after reading Raw
+            pass
 
         result['meta'] = {
             'file_type':    file_type,
@@ -647,32 +645,42 @@ def parse_file(file_bytes):
             num_ch_to_show = min(5, num_channels)
             ch_indices     = stored_ch_idxs[:num_ch_to_show] if stored_ch_idxs else list(range(num_ch_to_show))
 
-            # Raw shape: (total_samples, num_channels) or (num_channels, total_samples)
-            raw_shape = raw_dataset.shape
-            channels_out = []
+            # Raw is a 1-D uint8 array: each int16 sample = 2 bytes (little-endian).
+            # Layout: [frame0_ch0_lo, frame0_ch0_hi, frame0_ch1_lo, frame0_ch1_hi, ...,
+            #          frame1_ch0_lo, frame1_ch0_hi, ...]
+            n_channels_stored = len(stored_ch_idxs) if stored_ch_idxs else num_channels
+            if n_channels_stored == 0:
+                result['warning'] = 'No channel information available.'
+                f.close()
+                return json.dumps(result)
 
-            if raw_shape[0] >= raw_shape[1]:
-                # (samples, channels) layout
-                total_samples = raw_shape[0]
-                num_raw_ch    = raw_shape[1]
-                n_read        = min(window_samples, total_samples)
-                raw_slice     = raw_dataset[:n_read, :num_ch_to_show].astype(float)
-                for i, ch_idx in enumerate(ch_indices):
-                    digital_vals = raw_slice[:, i] if i < raw_slice.shape[1] else np.zeros(n_read)
-                    analog_vals  = (offset + digital_vals * conv_factor).tolist()
-                    channels_out.append({'index': int(ch_idx), 'analog': analog_vals})
-            else:
-                # (channels, samples) layout
-                total_samples = raw_shape[1]
-                n_read        = min(window_samples, total_samples)
-                raw_slice     = raw_dataset[:num_ch_to_show, :n_read].astype(float)
-                for i, ch_idx in enumerate(ch_indices):
-                    digital_vals = raw_slice[i] if i < raw_slice.shape[0] else np.zeros(n_read)
-                    analog_vals  = (offset + digital_vals * conv_factor).tolist()
-                    channels_out.append({'index': int(ch_idx), 'analog': analog_vals})
+            bytes_per_frame  = n_channels_stored * 2   # int16 = 2 bytes per sample
+            total_bytes      = raw_dataset.shape[0]
+            n_frames         = total_bytes // bytes_per_frame
+
+            # RawTOC entries are byte offsets into Raw for the start of each chunk
+            chunk_byte_start = int(raw_toc[0]) if raw_toc is not None and len(raw_toc) > 0 else 0
+
+            target_frames = int(min(window_samples, n_frames))
+            byte_start    = chunk_byte_start
+            byte_end      = byte_start + target_frames * bytes_per_frame
+
+            raw_bytes = np.array(raw_dataset[byte_start:byte_end], dtype=np.uint8)
+            samples   = np.frombuffer(raw_bytes.tobytes(), dtype=np.int16)
+
+            # ensure we have complete frames
+            complete_frames = samples.size // n_channels_stored
+            samples = samples[:complete_frames * n_channels_stored].reshape(complete_frames, n_channels_stored)
+
+            channels_out = []
+            for i, ch_idx in enumerate(ch_indices):
+                # column i corresponds to stored_ch_idxs[i]
+                digital_vals = samples[:, i].astype(float)
+                analog_vals  = (offset + digital_vals * conv_factor).tolist()
+                channels_out.append({'index': int(ch_idx), 'analog': analog_vals})
 
             if duration_sec is None:
-                duration_sec = float(total_samples) / sampling_rate
+                duration_sec = float(n_frames) / sampling_rate
                 result['meta']['duration_sec'] = duration_sec
 
             result['raw_signal'] = {'channels': channels_out}
