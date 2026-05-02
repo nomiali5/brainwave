@@ -208,6 +208,7 @@ let rawChart = null;
 let rasterChart = null;
 let waveformChart = null;
 const WINDOW_SEC = 3;
+const MAX_WAVEFORMS_PER_CHANNEL = 50;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function setStatus(msg) {
@@ -290,8 +291,8 @@ async function handleFile(file) {
     py.globals.set('file_bytes', uint8);
 
     const result = await py.runPythonAsync(PYTHON_PARSER);
-    const json   = result instanceof py.ffi.PyProxy ? result.toJs({ dict_converter: Object.fromEntries }) : result;
-    parsedData   = typeof json === 'string' ? JSON.parse(json) : json;
+    const pythonResult = result instanceof py.ffi.PyProxy ? result.toJs({ dict_converter: Object.fromEntries }) : result;
+    parsedData   = typeof pythonResult === 'string' ? JSON.parse(pythonResult) : pythonResult;
 
     if (parsedData.error) { showError(parsedData.error); hideStatus(); return; }
     if (parsedData.warning) showWarn(parsedData.warning);
@@ -359,12 +360,12 @@ function renderCharts(d) {
     channelSel.innerHTML = chIdxs.map(c => '<option value="' + c + '">' + c + '</option>').join('');
     channelCtrl.style.display = 'flex';
     controls.classList.add('visible');
-    renderWaveformChart(d.spike_waveforms, chIdxs[0]);
+    renderWaveformChart(d.spike_waveforms, chIdxs[0], d.meta.sampling_rate);
     cardWaveform.style.display = 'flex';
 
     channelSel.onchange = () => {
       destroyChart(waveformChart);
-      renderWaveformChart(d.spike_waveforms, parseInt(channelSel.value, 10));
+      renderWaveformChart(d.spike_waveforms, parseInt(channelSel.value, 10), d.meta.sampling_rate);
     };
   }
 }
@@ -478,14 +479,14 @@ function renderRasterChart(spikeRaster) {
   });
 }
 
-function renderWaveformChart(spikeWaveforms, chIdx) {
+function renderWaveformChart(spikeWaveforms, chIdx, samplingRate) {
   destroyChart(waveformChart);
   const ctx = document.getElementById('chart-waveform').getContext('2d');
   const waveforms = spikeWaveforms[chIdx] || [];
   const nSamples  = waveforms.length > 0 ? waveforms[0].length : 0;
-  // x-axis: assume ~1 sample = 1/SamplingRate ms (approximate for display)
-  const xMs = Array.from({ length: nSamples }, (_, i) => (i - Math.floor(nSamples / 2)) * (1000 / 20000));
-  const datasets = waveforms.slice(0, 50).map(w => ({
+  const samplePeriodMs = samplingRate > 0 ? (1000 / samplingRate) : (1000 / 20000);
+  const xMs = Array.from({ length: nSamples }, (_, i) => (i - Math.floor(nSamples / 2)) * samplePeriodMs);
+  const datasets = waveforms.slice(0, MAX_WAVEFORMS_PER_CHANNEL).map(w => ({
     data:        xMs.map((x, i) => ({ x, y: w[i] })),
     borderColor: '#00e5ff22',
     borderWidth: 1,
