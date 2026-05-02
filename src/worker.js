@@ -294,7 +294,7 @@ async function handleFile(file) {
     const pythonResult = result instanceof py.ffi.PyProxy ? result.toJs({ dict_converter: Object.fromEntries }) : result;
     parsedData   = typeof pythonResult === 'string' ? JSON.parse(pythonResult) : pythonResult;
 
-    if (parsedData.error) { showError(parsedData.error); hideStatus(); return; }
+    if (parsedData.error) { if (parsedData.traceback) console.error(parsedData.traceback); showError(parsedData.error); hideStatus(); return; }
     if (parsedData.warning) showWarn(parsedData.warning);
     if (parsedData.info)    showInfo(parsedData.info);
 
@@ -688,7 +688,8 @@ def parse_file(file_bytes):
         f.close()
 
     except Exception as e:
-        result['error'] = 'Parsing failed: ' + traceback.format_exc()
+        result['error'] = 'Parsing failed: ' + str(e)
+        result['traceback'] = traceback.format_exc()
 
     return json.dumps(result)
 
