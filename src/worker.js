@@ -659,9 +659,10 @@ function renderRasterPlot(result) {
     y: chToY[spikeChIdxs[i]]
   }));
 
-  // Limit to 2000 points for performance
-  const displayPoints = points.length > 2000
-    ? points.filter((_, i) => i % Math.ceil(points.length / 2000) === 0)
+  // Limit to 2000 points for performance (browser scatter rendering slows above this)
+  const MAX_RASTER_POINTS = 2000;
+  const displayPoints = points.length > MAX_RASTER_POINTS
+    ? points.filter((_, i) => i % Math.ceil(points.length / MAX_RASTER_POINTS) === 0)
     : points;
 
   if (window.rasterChartInstance) window.rasterChartInstance.destroy();
@@ -891,7 +892,7 @@ function renderPcaChart(result) {
     const chIdx = pca.channel_idxs[i];
     if (!groupedDatasets[colorId]) {
       groupedDatasets[colorId] = {
-        label: 'Ch ' + (pca.unique_channels[colorId] != null ? pca.unique_channels[colorId] : colorId),
+        label: 'Ch ' + (pca.unique_channels[colorId] ?? colorId),
         data: [],
         backgroundColor: PCA_COLORS[colorId % 8],
         pointRadius: 3,
@@ -1085,6 +1086,7 @@ def parse_file():
             counts_per_bin, _ = np.histogram(spike_times_arr, bins=bin_edges)
             mean_count = float(np.mean(counts_per_bin))
             std_count = float(np.std(counts_per_bin))
+            # 2-sigma threshold: bins above mean + 2*std are classified as network bursts
             burst_threshold = mean_count + 2 * std_count
             is_burst = (counts_per_bin > burst_threshold).tolist()
             network_burst_data = {
@@ -1097,6 +1099,7 @@ def parse_file():
             }
 
             # ── PCA PLOT ───────────────────────────────────────────────────────────────
+            # Use up to 500 waveforms for computational efficiency and memory constraints
             pca_data = None
             if spike_forms_raw is not None and spike_forms_raw.ndim == 2 and num_spikes > 1:
                 n_usable = min(num_spikes, 500)
