@@ -144,6 +144,21 @@ const HTML = `<!DOCTYPE html>
     margin-right: 4px;
     vertical-align: middle;
   }
+
+  .empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 120px;
+    color: #666;
+    font-size: 0.85rem;
+    font-style: italic;
+    border: 1px dashed #333;
+    border-radius: 6px;
+    margin-top: 12px;
+    padding: 16px;
+    text-align: center;
+  }
 </style>
 </head>
 <body>
@@ -355,10 +370,11 @@ async function handleFile(file) {
   destroyChart(rawChart);      rawChart      = null;
   destroyChart(rasterChart);   rasterChart   = null;
   destroyChart(waveformChart); waveformChart = null;
-  if (window.rasterChartInstance)     { window.rasterChartInstance.destroy();     window.rasterChartInstance     = null; }
-  if (window.firingRateChartInstance) { window.firingRateChartInstance.destroy(); window.firingRateChartInstance = null; }
+  if (window.rasterChartInstance)       { window.rasterChartInstance.destroy();       window.rasterChartInstance       = null; }
+  if (window.firingRateChartInstance)   { window.firingRateChartInstance.destroy();   window.firingRateChartInstance   = null; }
   if (window.networkBurstChartInstance) { window.networkBurstChartInstance.destroy(); window.networkBurstChartInstance = null; }
-  if (window.pcaChartInstance)        { window.pcaChartInstance.destroy();        window.pcaChartInstance        = null; }
+  if (window.pcaChartInstance)          { window.pcaChartInstance.destroy();          window.pcaChartInstance          = null; }
+  if (window.waveformChartInstance)     { window.waveformChartInstance.destroy();     window.waveformChartInstance     = null; }
 
   const ext = file.name.split('.').pop().toLowerCase();
   if (ext !== 'brw' && ext !== 'bxr') {
@@ -439,6 +455,11 @@ const COLORS = ['#00e5ff','#7b61ff','#ff9f43','#2ed573','#ff4757','#eccc68'];
 function renderCharts(d) {
   chartsGrid.classList.add('visible');
 
+  const fileType = d.meta && d.meta.file_type ? d.meta.file_type.toUpperCase() : '';
+  const isBrw = fileType === 'BRW';
+  const isBxr = fileType === 'BXR';
+
+  // ── RAW SIGNAL CHART — BRW only ───────────────────────────────────────────
   if (d.raw_signal) {
     renderRawChart(d.raw_signal, d.meta.sampling_rate);
     cardRaw.style.display = 'flex';
@@ -455,40 +476,90 @@ function renderCharts(d) {
       timeLabel.textContent = start + ' – ' + (start + WINDOW_SEC) + ' s';
       renderRawChartWindow(d.raw_signal, d.meta.sampling_rate, start);
     };
+  } else {
+    cardRaw.style.display = 'none';
   }
 
-  if (d.spike_raster) {
-    renderRasterChart(d.spike_raster);
-    cardRaster.style.display = 'flex';
-    chartsGrid.classList.add('visible');
-  }
-
-  if (d.spike_waveforms) {
-    const chIdxs = Object.keys(d.spike_waveforms).map(Number).sort((a,b)=>a-b);
-    channelSel.innerHTML = chIdxs.map(c => '<option value="' + c + '">' + c + '</option>').join('');
+  // ── WAVEFORM CHART — both file types (uses unified waveform_data format) ──
+  if (d.waveform_data && Object.keys(d.waveform_data).length > 0) {
+    cardWaveform.style.display = 'flex';
+    const channels = Object.keys(d.waveform_data);
+    channelSel.innerHTML = channels.map(ch => '<option value="' + ch + '">Channel ' + ch + '</option>').join('');
     channelCtrl.style.display = 'flex';
     controls.classList.add('visible');
-    renderWaveformChart(d.spike_waveforms, chIdxs[0], d.meta.sampling_rate);
-    cardWaveform.style.display = 'flex';
-
-    channelSel.onchange = () => {
-      destroyChart(waveformChart);
-      renderWaveformChart(d.spike_waveforms, parseInt(channelSel.value, 10), d.meta.sampling_rate);
+    drawWaveformsForChannel(channels[0], d.waveform_data, d.waveform_length || 58, d.meta.sampling_rate);
+    channelSel.onchange = (e) => {
+      if (window.waveformChartInstance) { window.waveformChartInstance.destroy(); window.waveformChartInstance = null; }
+      drawWaveformsForChannel(e.target.value, d.waveform_data, d.waveform_length || 58, d.meta.sampling_rate);
     };
+  } else {
+    cardWaveform.style.display = 'none';
   }
 
-  if (d.meta && d.meta.file_type === 'BXR') {
-    renderRasterPlot(d);
-    renderFiringRateChart(d);
-    renderNetworkBurstChart(d);
-    renderPcaChart(d);
-  }
-
+  // ── ALWAYS show all four analytics chart containers ───────────────────────
   ['raster-container', 'firing-rate-container',
    'network-burst-container', 'pca-container'].forEach(function(id) {
     const el = document.getElementById(id);
-    if (el) el.style.display = (d.meta && d.meta.file_type === 'BXR') ? 'block' : 'none';
+    if (el) el.style.display = 'block';
   });
+
+  // ── RASTER PLOT ───────────────────────────────────────────────────────────
+  const rasterTitle = document.querySelector('#raster-container h3');
+  if (rasterTitle) {
+    rasterTitle.textContent = isBrw ? 'Spike Raster Plot (threshold-detected)' : 'Spike Raster Plot';
+  }
+  const rasterSubtitle = document.querySelector('#raster-container .chart-subtitle');
+  if (rasterSubtitle) {
+    rasterSubtitle.textContent = d.spike_times_sec && d.spike_times_sec.length > 0
+      ? d.spike_times_sec.length + ' spikes across ' + d.total_duration_sec + 's'
+      : 'No spikes detected';
+  }
+  renderRasterPlot(d);
+
+  // ── MEAN FIRING RATE ──────────────────────────────────────────────────────
+  const frTitle = document.querySelector('#firing-rate-container h3');
+  if (frTitle) {
+    frTitle.textContent = isBrw ? 'Mean Firing Rate (threshold-detected)' : 'Mean Firing Rate';
+  }
+  renderFiringRateChart(d);
+
+  // ── NETWORK BURST FREQUENCY ───────────────────────────────────────────────
+  const nbTitle = document.querySelector('#network-burst-container h3');
+  if (nbTitle) {
+    nbTitle.textContent = isBrw ? 'Population Activity (100ms bins)' : 'Network Burst Frequency (100ms bins)';
+  }
+  renderNetworkBurstChart(d);
+
+  // ── PCA PLOT ──────────────────────────────────────────────────────────────
+  const pcaTitle = document.querySelector('#pca-container h3');
+  if (pcaTitle) {
+    pcaTitle.textContent = isBrw ? 'Spike Waveform PCA (threshold-detected)' : 'Spike Waveform PCA';
+  }
+
+  if (isBrw && d.n_spikes_detected === 0) {
+    const pcaContainer = document.getElementById('pca-container');
+    if (pcaContainer) {
+      const existing = pcaContainer.querySelector('.empty-state');
+      if (!existing) {
+        const div = document.createElement('div');
+        div.className = 'empty-state';
+        div.textContent = 'No spikes detected above ' + (d.spike_detection_method || 'threshold') +
+          '. Try a longer recording or a file with active neurons.';
+        pcaContainer.appendChild(div);
+      }
+    }
+  } else {
+    renderPcaChart(d);
+  }
+
+  // ── UPDATE INFO PANEL with spike detection info for BRW ───────────────────
+  if (isBrw) {
+    const infoExtra = document.getElementById('info-spike-detection');
+    if (infoExtra) {
+      infoExtra.textContent =
+        'Spikes detected: ' + d.n_spikes_detected + ' (' + d.spike_detection_method + ')';
+    }
+  }
 }
 
 function rawChartDatasets(rawSignal, samplingRate, startSec) {
@@ -601,28 +672,65 @@ function renderRasterChart(spikeRaster) {
 }
 
 function renderWaveformChart(spikeWaveforms, chIdx, samplingRate) {
-  destroyChart(waveformChart);
-  const ctx = document.getElementById('chart-waveform').getContext('2d');
-  const waveforms = spikeWaveforms[chIdx] || [];
-  const nSamples  = waveforms.length > 0 ? waveforms[0].length : 0;
+  // Legacy wrapper — kept for safety; new code paths use drawWaveformsForChannel directly
+  const waveformData = {};
+  Object.entries(spikeWaveforms).forEach(([ch, wfs]) => { waveformData[String(ch)] = wfs; });
+  const waveformLength = waveformData[String(chIdx)] && waveformData[String(chIdx)][0]
+    ? waveformData[String(chIdx)][0].length : 58;
+  drawWaveformsForChannel(String(chIdx), waveformData, waveformLength, samplingRate);
+}
+
+function drawWaveformsForChannel(chKey, waveformData, waveformLength, samplingRate) {
+  if (window.waveformChartInstance) { window.waveformChartInstance.destroy(); window.waveformChartInstance = null; }
+  const canvas = document.getElementById('chart-waveform');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const waveforms = waveformData[chKey] || [];
   const samplePeriodMs = samplingRate > 0 ? (1000 / samplingRate) : (1000 / 20000);
-  const xMs = Array.from({ length: nSamples }, (_, i) => (i - Math.floor(nSamples / 2)) * samplePeriodMs);
-  const datasets = waveforms.slice(0, MAX_WAVEFORMS_PER_CHANNEL).map(w => ({
-    data:        xMs.map((x, i) => ({ x, y: w[i] })),
-    borderColor: '#00e5ff22',
+  const timeAxis = Array.from({ length: waveformLength }, (_, i) => ((i - Math.floor(waveformLength / 2)) * samplePeriodMs).toFixed(2));
+
+  const datasets = waveforms.slice(0, MAX_WAVEFORMS_PER_CHANNEL).map((wf, i) => ({
+    label: i === 0 ? 'Ch ' + chKey : '',
+    data: timeAxis.map((x, j) => ({ x: parseFloat(x), y: wf[j] !== undefined ? wf[j] : 0 })),
+    borderColor: 'rgba(0, 229, 255, 0.2)',
     borderWidth: 1,
     pointRadius: 0,
-    tension:     0,
-    showLine:    true,
+    fill: false,
+    tension: 0,
+    showLine: true,
   }));
-  waveformChart = new Chart(ctx, {
+
+  // Mean waveform overlay
+  if (waveforms.length > 1) {
+    const meanWf = Array.from({ length: waveformLength }, (_, t) => {
+      const vals = waveforms.map(w => (w[t] !== undefined ? w[t] : 0));
+      return vals.reduce((a, b) => a + b, 0) / vals.length;
+    });
+    datasets.push({
+      label: 'Mean',
+      data: timeAxis.map((x, t) => ({ x: parseFloat(x), y: meanWf[t] })),
+      borderColor: 'rgba(255, 220, 50, 0.95)',
+      borderWidth: 2.5,
+      pointRadius: 0,
+      fill: false,
+      tension: 0.3,
+      showLine: true,
+    });
+  }
+
+  window.waveformChartInstance = new Chart(ctx, {
     type: 'line',
     data: { datasets },
     options: {
       animation: false,
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: {
+          display: true,
+          labels: { color: '#6c7a99', filter: item => item.text !== '' }
+        }
+      },
       scales: {
         x: {
           type: 'linear',
@@ -631,7 +739,7 @@ function renderWaveformChart(spikeWaveforms, chIdx, samplingRate) {
           grid:  { color: '#1e2435' },
         },
         y: {
-          title: { display: true, text: 'Amplitude (µV)', color: '#6c7a99' },
+          title: { display: true, text: 'Amplitude (\u00b5V)', color: '#6c7a99' },
           ticks: { color: '#6c7a99' },
           grid:  { color: '#1e2435' },
         },
@@ -1149,6 +1257,17 @@ def parse_file():
             if pca_data is not None:
                 result["pca"] = pca_data
 
+            # Normalise waveform_data to unified string-keyed format for JS renderer
+            waveform_data_bxr = {str(ch): wfs for ch, wfs in waveforms_by_ch.items()}
+            first_bxr_key = next(iter(waveform_data_bxr), None)
+            waveform_length_bxr = (
+                len(waveform_data_bxr[first_bxr_key][0])
+                if first_bxr_key and waveform_data_bxr[first_bxr_key]
+                else 58
+            )
+            result["waveform_data"] = waveform_data_bxr
+            result["waveform_length"] = waveform_length_bxr
+
         # ════════════════════════════════════════════════════════════════
         # BRW path
         # ════════════════════════════════════════════════════════════════
@@ -1211,6 +1330,158 @@ def parse_file():
                 result['meta']['duration_sec'] = duration_sec
 
             result['raw_signal'] = {'channels': channels_out}
+
+            # ── BRW SPIKE DETECTION FROM RAW SIGNAL ──────────────────────────
+            # Convert all channels to µV and run threshold-based spike detection
+            analog = offset + samples.astype(np.float32) * conv_factor
+            n_frames_loaded, n_ch_loaded = analog.shape
+
+            SPIKE_THRESHOLD_SIGMA = 4.5
+            REFRACTORY_FRAMES = int(sampling_rate * 0.002)  # 2 ms
+            WAVEFORM_FRAMES = 58
+            WAVE_PRE = 20
+            WAVE_POST = WAVEFORM_FRAMES - WAVE_PRE
+
+            detected_spike_times = []
+            detected_spike_ch_idxs = []
+            detected_spike_forms = []
+
+            for ch_i in range(n_ch_loaded):
+                ch_signal = analog[:, ch_i]
+                ch_mean = float(np.mean(ch_signal))
+                ch_std  = float(np.std(ch_signal))
+                if ch_std == 0:
+                    continue
+                threshold = ch_mean - SPIKE_THRESHOLD_SIGMA * ch_std
+                below = ch_signal < threshold
+                crossings = np.where(np.diff(below.astype(np.int8)) == 1)[0]
+                last_spike_frame = -REFRACTORY_FRAMES
+                for frame in crossings:
+                    if frame - last_spike_frame < REFRACTORY_FRAMES:
+                        continue
+                    search_end = min(frame + int(sampling_rate * 0.001), n_frames_loaded)
+                    peak_frame = int(frame + np.argmin(ch_signal[frame:search_end]))
+                    w_start = peak_frame - WAVE_PRE
+                    w_end   = peak_frame + WAVE_POST
+                    if w_start < 0 or w_end > n_frames_loaded:
+                        continue
+                    waveform = ch_signal[w_start:w_end]
+                    waveform_digital = np.clip(
+                        np.round((waveform - offset) / conv_factor),
+                        min_digital, max_digital
+                    ).astype(np.int16)
+                    detected_spike_times.append(peak_frame)
+                    detected_spike_ch_idxs.append(int(stored_ch_idxs[ch_i]))
+                    detected_spike_forms.append(waveform_digital.tolist())
+                    last_spike_frame = peak_frame
+
+            if detected_spike_times:
+                sort_order = np.argsort(detected_spike_times)
+                detected_spike_times  = [detected_spike_times[i]  for i in sort_order]
+                detected_spike_ch_idxs = [detected_spike_ch_idxs[i] for i in sort_order]
+                detected_spike_forms   = [detected_spike_forms[i]   for i in sort_order]
+
+            spike_times_arr = np.array(detected_spike_times,  dtype=np.int64)
+            spike_ch_arr    = np.array(detected_spike_ch_idxs, dtype=np.int32)
+            n_spikes = len(detected_spike_times)
+
+            # Raster data
+            spike_times_sec_brw  = (spike_times_arr / sampling_rate).tolist() if n_spikes > 0 else []
+            spike_ch_idxs_brw    = spike_ch_arr.tolist() if n_spikes > 0 else []
+
+            # Firing rates per channel
+            total_duration_sec_brw = float(n_frames_loaded) / sampling_rate
+            firing_rates_brw = {}
+            for ch_val in stored_ch_idxs:
+                ch_val = int(ch_val)
+                count = int(np.sum(spike_ch_arr == ch_val)) if n_spikes > 0 else 0
+                firing_rates_brw[ch_val] = round(count / total_duration_sec_brw, 4)
+            sorted_ch_brw = sorted(firing_rates_brw.keys(), key=lambda c: firing_rates_brw[c], reverse=True)
+            firing_rate_labels_brw = ["Ch " + str(c) for c in sorted_ch_brw]
+            firing_rate_values_brw = [firing_rates_brw[c] for c in sorted_ch_brw]
+
+            # Network burst frequency (100ms bins)
+            bin_size_sec_brw = 0.1
+            n_bins_brw = max(1, int(np.ceil(total_duration_sec_brw / bin_size_sec_brw)))
+            bin_edges_brw = np.linspace(0, total_duration_sec_brw, n_bins_brw + 1)
+            bin_centers_brw = ((bin_edges_brw[:-1] + bin_edges_brw[1:]) / 2).tolist()
+            if n_spikes > 0:
+                counts_per_bin_brw, _ = np.histogram(spike_times_arr / sampling_rate, bins=bin_edges_brw)
+            else:
+                counts_per_bin_brw = np.zeros(n_bins_brw, dtype=np.int64)
+            mean_count_brw = float(np.mean(counts_per_bin_brw))
+            std_count_brw  = float(np.std(counts_per_bin_brw))
+            burst_threshold_brw = mean_count_brw + 2 * std_count_brw
+            network_burst_brw = {
+                "bin_centers_sec": bin_centers_brw,
+                "spike_counts":    counts_per_bin_brw.tolist(),
+                "burst_threshold": round(burst_threshold_brw, 2),
+                "mean_count":      round(mean_count_brw, 2),
+                "is_burst":        (counts_per_bin_brw > burst_threshold_brw).tolist(),
+                "bin_size_sec":    bin_size_sec_brw
+            }
+
+            # PCA on detected spike waveforms
+            pca_brw = {"pc1": [], "pc2": [], "channel_idxs": [], "color_ids": [],
+                       "pc1_variance_pct": 0.0, "pc2_variance_pct": 0.0,
+                       "n_spikes_used": 0, "unique_channels": []}
+            if n_spikes >= 2:
+                n_usable = min(n_spikes, 500)
+                waveforms_arr = np.array(detected_spike_forms[:n_usable], dtype=np.float32)
+                waveform_ch_idxs_pca = spike_ch_arr[:n_usable]
+                waveforms_uv   = offset + conv_factor * waveforms_arr
+                waveforms_norm = waveforms_uv - waveforms_uv.mean(axis=1, keepdims=True)
+                norms = waveforms_norm.std(axis=1, keepdims=True)
+                norms[norms == 0] = 1.0
+                waveforms_norm = waveforms_norm / norms
+                try:
+                    data_centered = waveforms_norm - waveforms_norm.mean(axis=0)
+                    U, S, Vt = np.linalg.svd(data_centered, full_matrices=False)
+                    pc1_brw = (data_centered @ Vt[0]).tolist()
+                    pc2_brw = (data_centered @ Vt[1]).tolist()
+                    explained = (S**2 / np.sum(S**2))[:2]
+                    pc1_var = round(float(explained[0]) * 100, 1)
+                    pc2_var = round(float(explained[1]) * 100, 1)
+                except Exception:
+                    pc1_brw = waveforms_norm[:, WAVE_PRE].tolist()
+                    pc2_brw = waveforms_norm[:, min(WAVE_PRE + 5, WAVEFORM_FRAMES - 1)].tolist()
+                    pc1_var = 0.0
+                    pc2_var = 0.0
+                unique_ch_brw = sorted(set(int(c) for c in waveform_ch_idxs_pca))
+                ch_to_color_id = {ch: i % 8 for i, ch in enumerate(unique_ch_brw)}
+                color_ids_brw = [ch_to_color_id[int(c)] for c in waveform_ch_idxs_pca]
+                pca_brw = {
+                    "pc1": pc1_brw, "pc2": pc2_brw,
+                    "channel_idxs": [int(c) for c in waveform_ch_idxs_pca],
+                    "color_ids": color_ids_brw,
+                    "pc1_variance_pct": pc1_var, "pc2_variance_pct": pc2_var,
+                    "n_spikes_used": n_usable, "unique_channels": unique_ch_brw
+                }
+
+            # Waveform data for waveform chart (string-keyed, µV)
+            waveform_data_brw = {}
+            for i, ch_idx in enumerate(detected_spike_ch_idxs):
+                ch_key = str(ch_idx)
+                if ch_key not in waveform_data_brw:
+                    waveform_data_brw[ch_key] = []
+                if len(waveform_data_brw[ch_key]) < 50:
+                    wf_uv = [round(float(offset + conv_factor * s), 4) for s in detected_spike_forms[i]]
+                    waveform_data_brw[ch_key].append(wf_uv)
+
+            result.update({
+                "spike_times_sec":       spike_times_sec_brw,
+                "spike_ch_idxs":         spike_ch_idxs_brw,
+                "n_spikes_detected":     n_spikes,
+                "spike_detection_method": "threshold (" + str(SPIKE_THRESHOLD_SIGMA) + "\u03c3)",
+                "firing_rate_labels":    firing_rate_labels_brw,
+                "firing_rate_values":    firing_rate_values_brw,
+                "total_duration_sec":    round(total_duration_sec_brw, 2),
+                "network_burst":         network_burst_brw,
+                "pca":                   pca_brw,
+                "waveform_length":       WAVEFORM_FRAMES,
+                "waveform_data":         waveform_data_brw,
+                "stored_ch_idxs":        [int(x) for x in stored_ch_idxs]
+            })
 
     except Exception as e:
         result['error'] = 'Parsing failed: ' + traceback.format_exc()
