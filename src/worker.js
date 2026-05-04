@@ -185,6 +185,44 @@ const HTML = `<!DOCTYPE html>
     padding: 16px;
     text-align: center;
   }
+
+  /* ── Tabs ───────────────────────────────────────────────────────────── */
+  #tab-bar { display:flex; gap:4px; margin-bottom:20px; border-bottom:2px solid #333; }
+  .tab-btn { background:rgba(255,255,255,0.06); border:none; border-bottom:3px solid transparent;
+    color:#aaa; padding:10px 22px; font-size:0.9rem; cursor:pointer; transition:all 0.15s; }
+  .tab-btn.active, .tab-btn:hover { color:#00ffcc; border-bottom-color:#00ffcc; background:rgba(0,220,160,0.08); }
+  .tab-content { display:none; }
+  .tab-content.active { display:block; }
+
+  /* ── Excel upload section ────────────────────────────────────────────── */
+  #excel-tab { background:#f5f5f5; border-radius:8px; padding:24px; color:#222; }
+  #excel-upload-section h2 { font-size:1.2rem; color:#222; margin-bottom:6px; }
+  .hint { color:#666; font-size:0.83rem; margin-bottom:14px; }
+  .dropzone { border:2px dashed #aaa; border-radius:8px; padding:30px; text-align:center;
+    cursor:pointer; color:#888; font-size:0.9rem; transition:all 0.2s; background:#fff; }
+  .dropzone:hover, .dropzone.drag-over { border-color:#4BBFAD; color:#4BBFAD; background:#f0faf9; }
+  #excel-group-labels { display:flex; gap:14px; align-items:center; flex-wrap:wrap;
+    margin-top:14px; font-size:0.85rem; color:#444; }
+  #excel-group-labels input[type=text] { border:1px solid #ccc; border-radius:4px;
+    padding:4px 8px; font-size:0.85rem; width:120px; }
+  #excel-group-labels button { background:#4BBFAD; border:none; color:#fff;
+    border-radius:4px; padding:5px 12px; cursor:pointer; font-size:0.83rem; }
+  #excel-status { margin-top:8px; font-size:0.82rem; color:#4BBFAD; }
+
+  /* ── Excel toolbar ───────────────────────────────────────────────────── */
+  #excel-toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+  #excel-toolbar button { background:#fff; border:1px solid #ccc; color:#333;
+    border-radius:5px; padding:6px 14px; font-size:0.8rem; cursor:pointer; }
+  #excel-toolbar button:hover { background:#4BBFAD; color:#fff; border-color:#4BBFAD; }
+
+  /* ── Chart grid ──────────────────────────────────────────────────────── */
+  #excel-chart-grid { display:flex; flex-wrap:wrap; gap:20px; justify-content:flex-start; }
+  .box-plot-card { background:#fff; border:1px solid #e0e0e0; border-radius:6px;
+    padding:12px; position:relative; box-shadow:0 1px 4px rgba(0,0,0,0.08); }
+  .bp-export-btn { position:absolute; top:6px; right:6px; background:#f0f0f0;
+    border:1px solid #ccc; border-radius:3px; padding:2px 7px;
+    font-size:0.7rem; cursor:pointer; color:#555; }
+  .bp-export-btn:hover { background:#4BBFAD; color:#fff; border-color:#4BBFAD; }
 </style>
 </head>
 <body>
@@ -203,6 +241,15 @@ const HTML = `<!DOCTYPE html>
 </header>
 
 <main>
+<div id="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('brw-tab', this)">
+    🧠 BRW/BXR Analysis
+  </button>
+  <button class="tab-btn" onclick="switchTab('excel-tab', this)">
+    📊 Group Comparison
+  </button>
+</div>
+<div id="brw-tab" class="tab-content active">
   <!-- Upload -->
   <div id="upload-zone" role="button" tabindex="0" aria-label="Upload BRW or BXR file">
     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#00e5ff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -414,6 +461,33 @@ const HTML = `<!DOCTYPE html>
       <canvas id="pcaChart"></canvas>
     </div>
   </div>
+</div><!-- #brw-tab -->
+
+<div id="excel-tab" class="tab-content" style="display:none">
+  <div id="excel-upload-section">
+    <h2>Upload 3Brain Excel Export Files</h2>
+    <p class="hint">Upload one or more files: Min_Peak.xlsx, No__Bursts.xlsx, Peak-Peak.xlsx, Spikes_per_Burst.xlsx, Network_Summary.xlsx</p>
+    <div id="excel-dropzone" class="dropzone">
+      <span>Drop Excel files here or click to browse</span>
+      <input type="file" id="excel-file-input" multiple accept=".xlsx" style="display:none">
+    </div>
+    <div id="excel-group-labels" style="display:none">
+      <label>Group 1 name (wells A1-A3): <input type="text" id="grp1-name" value="Group 1"></label>
+      <label>Group 2 name (wells B1-B3): <input type="text" id="grp2-name" value="Group 2"></label>
+      <button id="btn-update-labels">Update Labels</button>
+    </div>
+    <div id="excel-status"></div>
+  </div>
+  <div id="excel-charts-section" style="display:none">
+    <div id="excel-toolbar">
+      <button onclick="exportAllExcelPNG()">⬇ Export All PNG</button>
+      <button onclick="exportExcelPDF()">⬇ Export PDF Report</button>
+      <button onclick="exportSummaryCSV()">⬇ Export Summary CSV</button>
+    </div>
+    <div id="excel-chart-grid"></div>
+  </div>
+</div><!-- #excel-tab -->
+
 </main>
 
 <footer>Brainwave · client-side HD-MEA viewer · all data processed locally in WebAssembly</footer>
@@ -2097,6 +2171,521 @@ initPyodide().then(() => {
   hideStatus();
   showWarn('Pyodide failed to pre-load. It will be loaded when you open a file. (' + err.message + ')');
 });
+
+// ─── Tab switching ────────────────────────────────────────────────────────────
+function switchTab(tabId, btn) {
+  document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none');
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(tabId).style.display = 'block';
+  btn.classList.add('active');
+}
+
+// ─── Excel / Box-plot section ─────────────────────────────────────────────────
+
+// Statistical helpers
+function computeBoxStats(values) {
+  if (!values || values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const n = sorted.length;
+  // Linear-interpolation quantile (matches numpy default)
+  function quantile(p) {
+    const pos = p * (n - 1);
+    const lo = Math.floor(pos);
+    const hi = Math.ceil(pos);
+    return lo === hi ? sorted[lo] : sorted[lo] + (pos - lo) * (sorted[hi] - sorted[lo]);
+  }
+  const median = quantile(0.5);
+  const q1 = quantile(0.25);
+  const q3 = quantile(0.75);
+  const iqr = q3 - q1;
+  const whiskerLow  = Math.max(sorted[0], q1 - 1.5 * iqr);
+  const whiskerHigh = Math.min(sorted[n-1], q3 + 1.5 * iqr);
+  const outliers = sorted.filter(v => v < whiskerLow || v > whiskerHigh);
+  return { q1, q3, median, whiskerLow, whiskerHigh, outliers, iqr, n, values: sorted };
+}
+
+function mannWhitneyU(a, b) {
+  let u = 0;
+  for (const x of a) for (const y of b) {
+    if (x > y) u++;
+    else if (x === y) u += 0.5;
+  }
+  const n1 = a.length, n2 = b.length;
+  const mu = n1 * n2 / 2;
+  const sigma = Math.sqrt(n1 * n2 * (n1 + n2 + 1) / 12);
+  const z = sigma === 0 ? 0 : (u - mu) / sigma;
+  const p = 2 * (1 - normalCDF(Math.abs(z)));
+  return { u, z, p };
+}
+function normalCDF(x) { return 0.5 * (1 + erf(x / Math.sqrt(2))); }
+function erf(x) {
+  const t = 1 / (1 + 0.3275911 * Math.abs(x));
+  const y = 1 - (((((1.061405429*t - 1.453152027)*t) + 1.421413741)*t - 0.284496736)*t + 0.254829592)*t*Math.exp(-x*x);
+  return x >= 0 ? y : -y;
+}
+
+// Custom Chart.js plugin to draw box plots
+const boxPlotPlugin = {
+  id: 'boxPlot',
+  afterDatasetsDraw(chart) {
+    const { ctx, scales: { x, y } } = chart;
+    const groups = chart.config._boxData;
+    if (!groups) return;
+
+    groups.forEach((grp, gi) => {
+      const stats = grp.stats;
+      if (!stats) return;
+      const xCenter = x.getPixelForValue(gi);
+      const boxW = Math.min(60, x.width / (groups.length * 3));
+      const color     = gi === 0 ? '#E8706A' : '#4BBFAD';
+      const colorFill = gi === 0 ? 'rgba(232,112,106,0.35)' : 'rgba(75,191,173,0.35)';
+
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+
+      // Whiskers + caps
+      ctx.beginPath();
+      ctx.moveTo(xCenter, y.getPixelForValue(stats.whiskerHigh));
+      ctx.lineTo(xCenter, y.getPixelForValue(stats.q3));
+      ctx.moveTo(xCenter, y.getPixelForValue(stats.whiskerLow));
+      ctx.lineTo(xCenter, y.getPixelForValue(stats.q1));
+      ctx.moveTo(xCenter - boxW/3, y.getPixelForValue(stats.whiskerHigh));
+      ctx.lineTo(xCenter + boxW/3, y.getPixelForValue(stats.whiskerHigh));
+      ctx.moveTo(xCenter - boxW/3, y.getPixelForValue(stats.whiskerLow));
+      ctx.lineTo(xCenter + boxW/3, y.getPixelForValue(stats.whiskerLow));
+      ctx.stroke();
+
+      // IQR box
+      const boxTop = y.getPixelForValue(stats.q3);
+      const boxBot = y.getPixelForValue(stats.q1);
+      ctx.fillStyle = colorFill;
+      ctx.fillRect(xCenter - boxW/2, boxTop, boxW, boxBot - boxTop);
+      ctx.strokeRect(xCenter - boxW/2, boxTop, boxW, boxBot - boxTop);
+
+      // Median line
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      const medY = y.getPixelForValue(stats.median);
+      ctx.moveTo(xCenter - boxW/2, medY);
+      ctx.lineTo(xCenter + boxW/2, medY);
+      ctx.stroke();
+
+      // Jittered individual points
+      ctx.fillStyle = color;
+      stats.values.forEach(v => {
+        const jitter = (Math.random() - 0.5) * boxW * 0.5;
+        ctx.beginPath();
+        ctx.arc(xCenter + jitter, y.getPixelForValue(v), 4, 0, Math.PI * 2);
+        ctx.globalAlpha = 0.75;
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+      });
+
+      // Outlier × marks
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      stats.outliers.forEach(v => {
+        const oy = y.getPixelForValue(v);
+        const os = 5;
+        ctx.beginPath();
+        ctx.moveTo(xCenter - os, oy - os); ctx.lineTo(xCenter + os, oy + os);
+        ctx.moveTo(xCenter + os, oy - os); ctx.lineTo(xCenter - os, oy + os);
+        ctx.stroke();
+      });
+
+      ctx.restore();
+    });
+
+    // Significance bar between two groups
+    if (groups.length === 2 && groups[0].stats && groups[1].stats) {
+      const stat = mannWhitneyU(groups[0].stats.values, groups[1].stats.values);
+      if (stat.p < 0.05) {
+        const x0 = x.getPixelForValue(0);
+        const x1 = x.getPixelForValue(1);
+        const allVals = [...groups[0].stats.values, ...groups[1].stats.values];
+        const topY = y.getPixelForValue(Math.max(...allVals)) - 20;
+        ctx.save();
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(x0, topY + 8); ctx.lineTo(x0, topY);
+        ctx.lineTo(x1, topY);     ctx.lineTo(x1, topY + 8);
+        ctx.stroke();
+        ctx.fillStyle = '#333';
+        ctx.font = 'bold 16px Arial';
+        ctx.textAlign = 'center';
+        const sigText = stat.p < 0.001 ? '***' : stat.p < 0.01 ? '**' : '*';
+        ctx.fillText(sigText, (x0 + x1) / 2, topY - 4);
+        ctx.restore();
+      }
+    }
+  }
+};
+Chart.register(boxPlotPlugin);
+
+function renderExcelBoxPlot(containerId, metricData, grp1Name, grp2Name, panelLabel) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const g1stats = computeBoxStats(metricData.group1);
+  const g2stats = computeBoxStats(metricData.group2);
+
+  const allVals = [...(metricData.group1 || []), ...(metricData.group2 || [])];
+  if (allVals.length === 0) return;
+  const yMax = Math.max(...allVals) * 1.35;
+  const yMin = Math.min(0, Math.min(...allVals) * 0.9);
+
+  const scatterG1 = (metricData.group1 || []).map(v => ({ x: 0, y: v }));
+  const scatterG2 = (metricData.group2 || []).map(v => ({ x: 1, y: v }));
+
+  const canvas = document.createElement('canvas');
+  canvas.width  = 280;
+  canvas.height = 340;
+  container.appendChild(canvas);
+
+  const chartInst = new Chart(canvas.getContext('2d'), {
+    type: 'scatter',
+    data: {
+      datasets: [
+        { data: scatterG1, backgroundColor: 'transparent', pointRadius: 0 },
+        { data: scatterG2, backgroundColor: 'transparent', pointRadius: 0 }
+      ]
+    },
+    options: {
+      responsive: false,
+      animation: false,
+      layout: { padding: { top: 40, right: 20, bottom: 10, left: 10 } },
+      plugins: {
+        legend:  { display: false },
+        tooltip: { enabled: false }
+      },
+      scales: {
+        x: {
+          type: 'linear',
+          min: -0.6, max: 1.6,
+          ticks: {
+            stepSize: 1,
+            callback: (v) => v === 0 ? grp1Name : v === 1 ? grp2Name : '',
+            color: '#222',
+            font: { size: 12, family: 'Arial' }
+          },
+          grid:   { display: false },
+          border: { color: '#222', width: 1.5 }
+        },
+        y: {
+          min: yMin, max: yMax,
+          ticks:  { color: '#222', font: { size: 11, family: 'Arial' } },
+          grid:   { display: false },
+          border: { color: '#222', width: 1.5 },
+          title: {
+            display: true,
+            text: metricData.metric,
+            color: '#222',
+            font: { size: 11, family: 'Arial' }
+          }
+        }
+      }
+    },
+    _boxData: [
+      { stats: g1stats, label: grp1Name },
+      { stats: g2stats, label: grp2Name }
+    ]
+  });
+
+  // Panel label
+  if (panelLabel) {
+    const ctx2 = canvas.getContext('2d');
+    ctx2.save();
+    ctx2.font = 'bold 14px Arial';
+    ctx2.fillStyle = '#000';
+    ctx2.fillText(panelLabel, 8, 18);
+    ctx2.restore();
+  }
+
+  return chartInst;
+}
+
+// Excel chart state
+const excelChartRegistry = {};
+const PANEL_LABELS = 'ABCDEFGHIJKLMNOP'.split('');
+
+// Python parsing code for Excel files
+const EXCEL_PARSER_PY = \`
+import base64, io, json
+import numpy as np
+
+def parse_channel_file(b64data, metric_name):
+    data = base64.b64decode(b64data)
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    well_cols = {'A1': 2, 'A2': 6, 'A3': 10, 'B1': 14, 'B2': 18, 'B3': 22}
+    well_values = {}
+    for well, col in well_cols.items():
+        vals = []
+        for row in rows[2:]:
+            if col < len(row) and row[col] is not None:
+                try:
+                    v = float(row[col])
+                    if not np.isnan(v):
+                        vals.append(v)
+                except (TypeError, ValueError):
+                    pass
+        well_values[well] = vals
+    group1 = []
+    group2 = []
+    for well in ['A1','A2','A3']:
+        if well_values[well]:
+            group1.append(float(np.mean(well_values[well])))
+    for well in ['B1','B2','B3']:
+        if well_values[well]:
+            group2.append(float(np.mean(well_values[well])))
+    return {'metric': metric_name, 'group1': group1, 'group2': group2}
+
+def parse_network_summary(b64data):
+    import openpyxl
+    data = base64.b64decode(b64data)
+    wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    ws = wb['Summary']
+    rows = list(ws.iter_rows(values_only=True))
+    groups = {'DMSO': [], 'ALPELISIB': [], 'GSK': [], 'LYN': []}
+    current_group = None
+    metrics = ['Frequency', '% in Network', 'INBI CoV']
+    result = {m: {g: [] for g in groups} for m in metrics}
+    for row in rows:
+        if row[0] in groups:
+            current_group = row[0]
+        if current_group and len(row) > 3 and row[1] is not None:
+            try:
+                result['Frequency'][current_group].append(float(row[1]))
+                result['% in Network'][current_group].append(float(row[2]))
+                result['INBI CoV'][current_group].append(float(row[3]))
+            except (TypeError, ValueError):
+                pass
+    return result
+
+results = []
+for file_info in files_list:
+    name = file_info['name'].lower()
+    b64  = file_info['b64']
+    try:
+        if 'min_peak' in name or 'min peak' in name:
+            results.append(parse_channel_file(b64, 'Min Peak Amplitude [\\u00b5V]'))
+        elif 'no__bursts' in name or 'bursts' in name:
+            results.append(parse_channel_file(b64, 'Number of Bursts [brts]'))
+        elif 'peak-peak' in name or 'peak_peak' in name:
+            results.append(parse_channel_file(b64, 'Peak-to-Peak Amplitude [\\u00b5V]'))
+        elif 'spikes_per_burst' in name or 'spikes per burst' in name:
+            results.append(parse_channel_file(b64, 'Mean Spikes per Burst [spks]'))
+        elif 'network_summary' in name or 'dmso' in name:
+            net = parse_network_summary(b64)
+            for metric, grps in net.items():
+                results.append({
+                    'metric': metric,
+                    'group1': grps['DMSO'],
+                    'group2': grps['ALPELISIB']
+                })
+    except Exception as ex:
+        import traceback
+        results.append({'error': str(ex), 'traceback': traceback.format_exc(), 'name': name})
+
+json.dumps(results)
+\`;
+
+async function handleExcelFiles(files) {
+  const statusEl = document.getElementById('excel-status');
+  statusEl.textContent = 'Loading packages…';
+
+  try {
+    const py = await initPyodide();
+    statusEl.textContent = 'Installing openpyxl…';
+    await py.loadPackage(['openpyxl', 'numpy']);
+
+    statusEl.textContent = 'Reading files…';
+    const fileList = await Promise.all(Array.from(files).map(async f => {
+      const ab  = await f.arrayBuffer();
+      const u8  = new Uint8Array(ab);
+      let bin = '';
+      for (let i = 0; i < u8.length; i += 8192)
+        bin += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+      return { name: f.name, b64: btoa(bin) };
+    }));
+
+    py.globals.set('files_list', py.toPy(fileList.map(f => ({ name: f.name, b64: f.b64 }))));
+    statusEl.textContent = 'Parsing Excel data…';
+
+    const resultJson = await py.runPythonAsync(EXCEL_PARSER_PY);
+    const results = JSON.parse(resultJson);
+
+    const errors = results.filter(r => r.error);
+    if (errors.length) {
+      console.warn('[Excel] parse errors:', errors);
+    }
+    const good = results.filter(r => !r.error);
+    window._excelResults = good;
+
+    renderAllExcelCharts(good);
+    statusEl.textContent = 'Loaded ' + good.length + ' metric(s) from ' + files.length + ' file(s)';
+    document.getElementById('excel-group-labels').style.display = 'flex';
+    document.getElementById('excel-charts-section').style.display = 'block';
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    console.error('[Excel]', err);
+  }
+}
+
+function renderAllExcelCharts(results) {
+  const grid = document.getElementById('excel-chart-grid');
+  grid.innerHTML = '';
+  Object.keys(excelChartRegistry).forEach(k => {
+    try { excelChartRegistry[k].instance && excelChartRegistry[k].instance.destroy(); } catch(e){}
+    delete excelChartRegistry[k];
+  });
+
+  const grp1 = document.getElementById('grp1-name') ? document.getElementById('grp1-name').value || 'Group 1' : 'Group 1';
+  const grp2 = document.getElementById('grp2-name') ? document.getElementById('grp2-name').value || 'Group 2' : 'Group 2';
+
+  results.forEach((metric, i) => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'box-plot-card';
+    wrapper.id = 'bp-card-' + i;
+
+    const exportBtn = document.createElement('button');
+    exportBtn.className = 'bp-export-btn';
+    exportBtn.textContent = '⬇ PNG';
+    exportBtn.onclick = () => exportBoxPlotPNG(i, metric.metric);
+    wrapper.appendChild(exportBtn);
+
+    grid.appendChild(wrapper);
+    const inst = renderExcelBoxPlot('bp-card-' + i, metric, grp1, grp2, PANEL_LABELS[i] || String(i + 1));
+    excelChartRegistry[i] = { instance: inst, metric };
+  });
+}
+
+// Wire up label update button and dropzone after DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  const updateBtn = document.getElementById('btn-update-labels');
+  if (updateBtn) {
+    updateBtn.addEventListener('click', () => {
+      if (window._excelResults) renderAllExcelCharts(window._excelResults);
+    });
+  }
+
+  const dropzone = document.getElementById('excel-dropzone');
+  const fileInputEl = document.getElementById('excel-file-input');
+  if (dropzone && fileInputEl) {
+    dropzone.addEventListener('click', () => fileInputEl.click());
+    dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+    dropzone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropzone.classList.remove('drag-over');
+      if (e.dataTransfer.files.length) handleExcelFiles(e.dataTransfer.files);
+    });
+    fileInputEl.addEventListener('change', e => {
+      if (e.target.files.length) handleExcelFiles(e.target.files);
+    });
+  }
+});
+
+// ─── Export helpers ────────────────────────────────────────────────────────────
+function exportBoxPlotPNG(idx, metricName) {
+  const card = document.getElementById('bp-card-' + idx);
+  if (!card) return;
+  const canvas = card.querySelector('canvas');
+  if (!canvas) return;
+  const tmp = document.createElement('canvas');
+  tmp.width  = canvas.width;
+  tmp.height = canvas.height;
+  const ctx2 = tmp.getContext('2d');
+  ctx2.fillStyle = '#ffffff';
+  ctx2.fillRect(0, 0, tmp.width, tmp.height);
+  ctx2.drawImage(canvas, 0, 0);
+  const a = document.createElement('a');
+  a.download = 'boxplot_' + (metricName || '').replace(/[^a-z0-9]/gi, '_') + '_' + Date.now() + '.png';
+  a.href = tmp.toDataURL('image/png');
+  a.click();
+}
+
+function exportAllExcelPNG() {
+  Object.keys(excelChartRegistry).forEach((idx, i) =>
+    setTimeout(() => exportBoxPlotPNG(parseInt(idx), excelChartRegistry[idx].metric.metric), i * 400));
+}
+
+function exportSummaryCSV() {
+  if (!window._excelResults) return;
+  const grp1 = document.getElementById('grp1-name') ? document.getElementById('grp1-name').value || 'Group 1' : 'Group 1';
+  const grp2 = document.getElementById('grp2-name') ? document.getElementById('grp2-name').value || 'Group 2' : 'Group 2';
+  const sd = arr => arr.length < 2 ? 0 :
+    Math.sqrt(arr.map(v => (v - arr.reduce((a,b) => a+b, 0)/arr.length)**2)
+      .reduce((a,b) => a+b, 0) / (arr.length - 1));
+  const rows = [['Metric','Group','N','Mean','Median','SD','Q1','Q3','WhiskerLow','WhiskerHigh','p_value']];
+  window._excelResults.forEach(m => {
+    const s1 = computeBoxStats(m.group1);
+    const s2 = computeBoxStats(m.group2);
+    const stat = s1 && s2 ? mannWhitneyU(m.group1, m.group2) : { p: 'N/A' };
+    const pStr = typeof stat.p === 'number' ? stat.p.toFixed(4) : stat.p;
+    if (s1) rows.push([m.metric, grp1, s1.n,
+      (s1.values.reduce((a,b)=>a+b,0)/s1.n).toFixed(4), s1.median.toFixed(4),
+      sd(m.group1).toFixed(4), s1.q1, s1.q3, s1.whiskerLow, s1.whiskerHigh, pStr]);
+    if (s2) rows.push([m.metric, grp2, s2.n,
+      (s2.values.reduce((a,b)=>a+b,0)/s2.n).toFixed(4), s2.median.toFixed(4),
+      sd(m.group2).toFixed(4), s2.q1, s2.q3, s2.whiskerLow, s2.whiskerHigh, pStr]);
+  });
+  const blob = new Blob([rows.map(r => r.join(',')).join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'brainwave_group_summary_' + Date.now() + '.csv';
+  a.click();
+}
+
+async function exportExcelPDF() {
+  const btn = document.querySelector('#excel-toolbar button:nth-child(2)');
+  if (btn) { btn.textContent = '⏳ Building…'; btn.disabled = true; }
+  try {
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const W = pdf.internal.pageSize.getWidth();
+    const M = 10;
+
+    pdf.setFontSize(16); pdf.setTextColor(50, 50, 50);
+    pdf.text('BrainWave HD-MEA Group Comparison Report', M, 20);
+    pdf.setFontSize(10); pdf.setTextColor(120, 120, 120);
+    pdf.text('Generated: ' + new Date().toLocaleString(), M, 30);
+    const g1n = document.getElementById('grp1-name') ? document.getElementById('grp1-name').value || 'Group 1' : 'Group 1';
+    const g2n = document.getElementById('grp2-name') ? document.getElementById('grp2-name').value || 'Group 2' : 'Group 2';
+    pdf.text('Groups: ' + g1n + ' vs ' + g2n, M, 38);
+
+    const keys = Object.keys(excelChartRegistry);
+    for (let i = 0; i < keys.length; i += 2) {
+      pdf.addPage();
+      for (let j = 0; j < 2 && i + j < keys.length; j++) {
+        const idx  = keys[i + j];
+        const card = document.getElementById('bp-card-' + idx);
+        if (!card) continue;
+        const canvas = card.querySelector('canvas');
+        if (!canvas) continue;
+        const tmp = document.createElement('canvas');
+        tmp.width  = canvas.width  * 2;
+        tmp.height = canvas.height * 2;
+        const ctx2 = tmp.getContext('2d');
+        ctx2.scale(2, 2);
+        ctx2.fillStyle = '#fff';
+        ctx2.fillRect(0, 0, canvas.width, canvas.height);
+        ctx2.drawImage(canvas, 0, 0);
+        const imgW = (W - M * 3) / 2;
+        const imgH = imgW * (canvas.height / canvas.width);
+        pdf.addImage(tmp.toDataURL('image/png'), 'PNG', M + j * (imgW + M), 15, imgW, imgH);
+      }
+    }
+    pdf.save('brainwave_boxplots_' + Date.now() + '.pdf');
+  } finally {
+    if (btn) { btn.textContent = '⬇ Export PDF Report'; btn.disabled = false; }
+  }
+}
 </script>
 </body>
 </html>`;
