@@ -6,6 +6,10 @@ const HTML = `<!DOCTYPE html>
 <title>Brainwave — HD-MEA Neurophysiology Viewer</title>
 <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script>document.addEventListener('DOMContentLoaded',()=>{ if(window.Chart&&window.ChartZoom) Chart.register(window.ChartZoom); });</script>
 <style>
   :root {
     --bg:        #0a0c10;
@@ -107,6 +111,28 @@ const HTML = `<!DOCTYPE html>
   @media (max-width: 800px) {
     #charts-grid.visible { grid-template-columns: 1fr; }
   }
+
+  #global-toolbar{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;
+    background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);
+    border-radius:8px;padding:10px 16px;margin-bottom:20px;}
+  #global-toolbar button{background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);
+    color:#ccc;border-radius:5px;padding:5px 11px;font-size:0.77rem;cursor:pointer;}
+  #global-toolbar button:hover{background:rgba(255,255,255,0.14);color:#fff;}
+  .chart-controls{display:flex;justify-content:space-between;flex-wrap:wrap;gap:5px;margin-bottom:8px;}
+  .chart-controls button{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);
+    color:#bbb;border-radius:4px;padding:3px 9px;font-size:0.73rem;cursor:pointer;}
+  .chart-controls button:hover{background:rgba(255,255,255,0.13);color:#fff;}
+  .chart-extra{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);
+    border-radius:6px;padding:7px 11px;margin-bottom:9px;display:flex;flex-wrap:wrap;
+    gap:8px;align-items:center;font-size:0.75rem;color:#999;}
+  .chart-extra label{display:flex;align-items:center;gap:4px;color:#aaa;cursor:pointer;}
+  .chart-extra input[type=range]{width:80px;accent-color:#00dcb4;}
+  .chart-extra select{background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);
+    color:#ccc;border-radius:4px;padding:2px 5px;font-size:0.74rem;}
+  .toggle-label{display:flex;align-items:center;gap:3px;color:#bbb;font-size:0.74rem;cursor:pointer;}
+  .toggle-label input{accent-color:#00dcb4;}
+  .detail-box{background:rgba(0,220,160,0.07);border:1px solid rgba(0,220,160,0.2);
+    border-radius:5px;padding:4px 10px;font-family:monospace;font-size:0.74rem;color:#00ffcc;}
 
   /* ── new chart containers ── */
   .chart-container {
@@ -221,17 +247,94 @@ const HTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Global Toolbar -->
+  <div id="global-toolbar" style="display:none">
+    <div>
+      <button onclick="ChartRegistry.resetAllZoom()">&#x27F3; Reset All Zoom</button>
+      <button id="btn-anim">&#9670; Animations: ON</button>
+      <button id="btn-grid">&#8862; Grid: ON</button>
+    </div>
+    <div>
+      <button onclick="exportAllCSV()">&#11015; All CSV</button>
+      <button onclick="exportAllPNG()">&#11015; All PNG</button>
+      <button id="btn-export-pdf" onclick="exportPDF()">&#11015; PDF Report</button>
+    </div>
+  </div>
+
   <!-- Charts -->
   <div id="charts-grid">
-    <div class="chart-card" id="card-raw"      style="display:none"><h3>Raw Signal</h3><div class="chart-wrap"><canvas id="chart-raw"></canvas></div></div>
-    <div class="chart-card" id="card-raster"   style="display:none"><h3>Spike Raster (0 – 10 s)</h3><div class="chart-wrap"><canvas id="chart-raster"></canvas></div></div>
-    <div class="chart-card" id="card-waveform" style="display:none"><h3>Spike Waveforms</h3><div class="chart-wrap"><canvas id="chart-waveform"></canvas></div></div>
+    <div class="chart-card" id="card-raw" style="display:none">
+      <h3>Raw Signal</h3>
+      <div class="chart-controls">
+        <span>
+          <button onclick="ChartRegistry.get('rawSignal')?.zoom(1.2)">&#xFF0B;</button>
+          <button onclick="ChartRegistry.get('rawSignal')?.zoom(0.8)">&#xFF0D;</button>
+          <button onclick="ChartRegistry.get('rawSignal')?.resetZoom()">&#x27F3;</button>
+          <button onclick="togglePan('rawSignal')">&#x2725; Pan</button>
+        </span>
+        <span>
+          <button onclick="exportCSV('rawSignal')">&#11015; CSV</button>
+          <button onclick="exportPNG('rawSignal')">&#11015; PNG</button>
+        </span>
+      </div>
+      <div class="chart-extra">
+        <label>Time: <input type="range" id="raw-t-start" min="0" max="100" value="0">
+        &#8594; <input type="range" id="raw-t-end" min="0" max="100" value="100"></label>
+        <div id="raw-ch-toggles"></div>
+        <label><input type="checkbox" id="raw-offset" checked> Separate channels</label>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-raw"></canvas></div>
+    </div>
+    <div class="chart-card" id="card-raster"   style="display:none"><h3>Spike Raster (0 &#8211; 10 s)</h3><div class="chart-wrap"><canvas id="chart-raster"></canvas></div></div>
+    <div class="chart-card" id="card-waveform" style="display:none">
+      <h3>Spike Waveforms</h3>
+      <div class="chart-controls">
+        <span>
+          <button onclick="ChartRegistry.get('waveform')?.zoom(1.2)">&#xFF0B;</button>
+          <button onclick="ChartRegistry.get('waveform')?.zoom(0.8)">&#xFF0D;</button>
+          <button onclick="ChartRegistry.get('waveform')?.resetZoom()">&#x27F3;</button>
+          <button onclick="togglePan('waveform')">&#x2725; Pan</button>
+        </span>
+        <span>
+          <button onclick="exportCSV('waveform')">&#11015; CSV</button>
+          <button onclick="exportPNG('waveform')">&#11015; PNG</button>
+        </span>
+      </div>
+      <div class="chart-extra">
+        <label>Max: <input type="range" id="wf-max" min="1" max="50" value="50">
+        <span id="wf-max-val">50</span></label>
+        <label><input type="checkbox" id="wf-mean" checked> Mean</label>
+        <label><input type="checkbox" id="wf-std"> &#177;SD</label>
+        <label><input type="checkbox" id="wf-norm"> Normalize</label>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-waveform"></canvas></div>
+    </div>
 
     <!-- NEW CHARTS - add after existing chart canvases -->
     <div class="chart-container" id="raster-container" style="display:none">
       <div class="chart-header">
         <h3>Spike Raster Plot</h3>
         <span class="chart-subtitle">Each dot = one spike event</span>
+      </div>
+      <div class="chart-controls">
+        <span>
+          <button onclick="ChartRegistry.get('raster')?.zoom(1.2)">&#xFF0B;</button>
+          <button onclick="ChartRegistry.get('raster')?.zoom(0.8)">&#xFF0D;</button>
+          <button onclick="ChartRegistry.get('raster')?.resetZoom()">&#x27F3;</button>
+          <button onclick="togglePan('raster')">&#x2725; Pan</button>
+        </span>
+        <span>
+          <button onclick="exportCSV('raster')">&#11015; CSV</button>
+          <button onclick="exportPNG('raster')">&#11015; PNG</button>
+        </span>
+      </div>
+      <div class="chart-extra">
+        <label>Time: <input type="range" id="rst-t0" min="0" max="100" value="0"> &#8594;
+        <input type="range" id="rst-t1" min="0" max="100" value="100"></label>
+        <label>Size: <input type="range" id="rst-sz" min="1" max="8" value="2" step="0.5"></label>
+        <select id="rst-color"><option value="channel">By Channel</option>
+        <option value="time">By Time</option><option value="uniform">Uniform</option></select>
+        <div id="rst-detail" style="display:none" class="detail-box"></div>
       </div>
       <canvas id="rasterChart"></canvas>
     </div>
@@ -241,6 +344,18 @@ const HTML = `<!DOCTYPE html>
         <h3>Mean Firing Rate</h3>
         <span class="chart-subtitle">Spikes per second (Hz) per channel</span>
       </div>
+      <div class="chart-controls">
+        <span>
+          <button onclick="ChartRegistry.get('firingRate')?.zoom(1.2)">&#xFF0B;</button>
+          <button onclick="ChartRegistry.get('firingRate')?.zoom(0.8)">&#xFF0D;</button>
+          <button onclick="ChartRegistry.get('firingRate')?.resetZoom()">&#x27F3;</button>
+          <button onclick="togglePan('firingRate')">&#x2725; Pan</button>
+        </span>
+        <span>
+          <button onclick="exportCSV('firingRate')">&#11015; CSV</button>
+          <button onclick="exportPNG('firingRate')">&#11015; PNG</button>
+        </span>
+      </div>
       <canvas id="firingRateChart"></canvas>
     </div>
 
@@ -249,13 +364,52 @@ const HTML = `<!DOCTYPE html>
         <h3>Network Burst Frequency</h3>
         <span class="chart-subtitle">Population spike rate in 100ms bins</span>
       </div>
+      <div class="chart-controls">
+        <span>
+          <button onclick="ChartRegistry.get('networkBurst')?.zoom(1.2)">&#xFF0B;</button>
+          <button onclick="ChartRegistry.get('networkBurst')?.zoom(0.8)">&#xFF0D;</button>
+          <button onclick="ChartRegistry.get('networkBurst')?.resetZoom()">&#x27F3;</button>
+          <button onclick="togglePan('networkBurst')">&#x2725; Pan</button>
+        </span>
+        <span>
+          <button onclick="exportCSV('networkBurst')">&#11015; CSV</button>
+          <button onclick="exportPNG('networkBurst')">&#11015; PNG</button>
+        </span>
+      </div>
+      <div class="chart-extra">
+        <select id="nb-bin"><option value="0.05">50ms</option><option value="0.1" selected>100ms</option>
+        <option value="0.25">250ms</option><option value="0.5">500ms</option></select>
+        <label>&#963;: <input type="range" id="nb-sigma" min="0.5" max="5" value="2" step="0.5">
+        <span id="nb-sigma-val">2.0</span></label>
+        <label>Smooth: <input type="range" id="nb-smooth" min="1" max="10" value="1"></label>
+        <label><input type="checkbox" id="nb-thresh" checked> Threshold line</label>
+      </div>
       <canvas id="networkBurstChart"></canvas>
     </div>
 
     <div class="chart-container" id="pca-container" style="display:none">
       <div class="chart-header">
         <h3>Spike Waveform PCA</h3>
-        <span id="pca-subtitle" class="chart-subtitle">PC1 vs PC2 — colored by channel</span>
+        <span id="pca-subtitle" class="chart-subtitle">PC1 vs PC2 &#8212; colored by channel</span>
+      </div>
+      <div class="chart-controls">
+        <span>
+          <button onclick="ChartRegistry.get('pca')?.zoom(1.2)">&#xFF0B;</button>
+          <button onclick="ChartRegistry.get('pca')?.zoom(0.8)">&#xFF0D;</button>
+          <button onclick="ChartRegistry.get('pca')?.resetZoom()">&#x27F3;</button>
+          <button onclick="togglePan('pca')">&#x2725; Pan</button>
+        </span>
+        <span>
+          <button onclick="exportCSV('pca')">&#11015; CSV</button>
+          <button onclick="exportPNG('pca')">&#11015; PNG</button>
+        </span>
+      </div>
+      <div class="chart-extra">
+        <label>Size: <input type="range" id="pca-sz" min="1" max="10" value="3" step="0.5"></label>
+        <label>Opacity: <input type="range" id="pca-op" min="10" max="100" value="75"></label>
+        <select id="pca-color"><option value="channel">By Channel</option>
+        <option value="time">By Time</option><option value="amplitude">By Amplitude</option></select>
+        <div id="pca-ch-filter"></div>
       </div>
       <canvas id="pcaChart"></canvas>
     </div>
@@ -294,6 +448,31 @@ let rasterChart = null;
 let waveformChart = null;
 const WINDOW_SEC = 3;
 const MAX_WAVEFORMS_PER_CHANNEL = 50;
+
+// ─── Chart Registry ──────────────────────────────────────────────────────────
+const ChartRegistry = {
+  instances: {},
+  register(name, inst) { this.instances[name] = inst; },
+  get(name) { return this.instances[name]; },
+  getAll() { return Object.values(this.instances).filter(Boolean); },
+  resetAllZoom() { this.getAll().forEach(c => { try { c.resetZoom(); } catch(e){} }); }
+};
+
+const ZOOM_CONFIG = (mode) => {
+  mode = mode || 'xy';
+  return {
+    zoom: { wheel:{enabled:true,speed:0.1}, pinch:{enabled:true}, mode: mode },
+    pan:  { enabled:false, mode: mode, threshold:5 }
+  };
+};
+
+function togglePan(name) {
+  var c = ChartRegistry.get(name); if(!c) return;
+  c.options.plugins.zoom.pan.enabled = !c.options.plugins.zoom.pan.enabled;
+  c.update('none');
+}
+
+let animOn = true, gridOn = true;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function setStatus(msg) {
@@ -375,6 +554,9 @@ async function handleFile(file) {
   if (window.networkBurstChartInstance) { window.networkBurstChartInstance.destroy(); window.networkBurstChartInstance = null; }
   if (window.pcaChartInstance)          { window.pcaChartInstance.destroy();          window.pcaChartInstance          = null; }
   if (window.waveformChartInstance)     { window.waveformChartInstance.destroy();     window.waveformChartInstance     = null; }
+  ChartRegistry.instances = {};
+  var toolbar = document.getElementById('global-toolbar');
+  if (toolbar) toolbar.style.display = 'none';
 
   const ext = file.name.split('.').pop().toLowerCase();
   if (ext !== 'brw' && ext !== 'bxr') {
@@ -560,6 +742,21 @@ function renderCharts(d) {
         'Spikes detected: ' + d.n_spikes_detected + ' (' + d.spike_detection_method + ')';
     }
   }
+
+  // ── Show global toolbar ───────────────────────────────────────────────────
+  var toolbar = document.getElementById('global-toolbar');
+  if (toolbar) toolbar.style.display = 'flex';
+
+  // ── Wire interactivity (after a tick to let charts paint) ─────────────────
+  window._result = d;
+  setTimeout(function() {
+    wireGlobalToolbar();
+    wireRawSignal(d);
+    wireRaster(d);
+    wireNetworkBurst(d);
+    wirePca(d);
+    wireWaveform(d);
+  }, 100);
 }
 
 function rawChartDatasets(rawSignal, samplingRate, startSec) {
@@ -589,6 +786,7 @@ function renderRawChart(rawSignal, samplingRate) {
     data: { datasets: rawChartDatasets(rawSignal, samplingRate, 0) },
     options: rawChartOptions(),
   });
+  ChartRegistry.register('rawSignal', rawChart);
 }
 
 function renderRawChartWindow(rawSignal, samplingRate, startSec) {
@@ -608,6 +806,7 @@ function rawChartOptions() {
     plugins: {
       legend: { labels: { color: '#cdd6f4', boxWidth: 12, font: { size: 11 } } },
       tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + ' µV' } },
+      zoom: ZOOM_CONFIG(),
     },
     scales: {
       x: {
@@ -729,7 +928,8 @@ function drawWaveformsForChannel(chKey, waveformData, waveformLength, samplingRa
         legend: {
           display: true,
           labels: { color: '#6c7a99', filter: item => item.text !== '' }
-        }
+        },
+        zoom: ZOOM_CONFIG(),
       },
       scales: {
         x: {
@@ -746,6 +946,7 @@ function drawWaveformsForChannel(chKey, waveformData, waveformLength, samplingRa
       },
     },
   });
+  ChartRegistry.register('waveform', window.waveformChartInstance);
 }
 
 // ─── Python parser (runs in Pyodide) ────────────────────────────────────────
@@ -796,7 +997,8 @@ function renderRasterPlot(result) {
           callbacks: {
             label: ctx => 'Time: ' + ctx.parsed.x.toFixed(3) + 's  Ch: ' + uniqueChannels[ctx.parsed.y]
           }
-        }
+        },
+        zoom: ZOOM_CONFIG(),
       },
       scales: {
         x: {
@@ -819,6 +1021,7 @@ function renderRasterPlot(result) {
       }
     }
   });
+  ChartRegistry.register('raster', window.rasterChartInstance);
 }
 
 function renderFiringRateChart(result) {
@@ -860,7 +1063,8 @@ function renderFiringRateChart(result) {
           callbacks: {
             label: ctx => ctx.parsed.y.toFixed(2) + ' Hz'
           }
-        }
+        },
+        zoom: ZOOM_CONFIG(),
       },
       scales: {
         x: {
@@ -884,6 +1088,7 @@ function renderFiringRateChart(result) {
       }
     }
   });
+  ChartRegistry.register('firingRate', window.firingRateChartInstance);
 }
 
 function renderNetworkBurstChart(result) {
@@ -944,7 +1149,8 @@ function renderNetworkBurstChart(result) {
               ? 'Spikes: ' + ctx.parsed.y
               : 'Threshold: ' + ctx.parsed.y.toFixed(1)
           }
-        }
+        },
+        zoom: ZOOM_CONFIG(),
       },
       scales: {
         x: {
@@ -967,6 +1173,7 @@ function renderNetworkBurstChart(result) {
       }
     }
   });
+  ChartRegistry.register('networkBurst', window.networkBurstChartInstance);
 }
 
 function renderPcaChart(result) {
@@ -1030,7 +1237,8 @@ function renderPcaChart(result) {
               'PC2: ' + ctx.parsed.y.toFixed(3)
             ]
           }
-        }
+        },
+        zoom: ZOOM_CONFIG(),
       },
       scales: {
         x: {
@@ -1058,6 +1266,391 @@ function renderPcaChart(result) {
       }
     }
   });
+  ChartRegistry.register('pca', window.pcaChartInstance);
+}
+
+// ─── Global toolbar wiring ────────────────────────────────────────────────────
+function wireGlobalToolbar() {
+  var btnAnim = document.getElementById('btn-anim');
+  var btnGrid = document.getElementById('btn-grid');
+
+  if (btnAnim) {
+    btnAnim.onclick = null;
+    btnAnim.addEventListener('click', function() {
+      animOn = !animOn;
+      ChartRegistry.getAll().forEach(function(c) {
+        c.options.animation = animOn ? {duration:400} : false;
+        c.update('none');
+      });
+      this.textContent = '\u25C6 Animations: ' + (animOn ? 'ON' : 'OFF');
+    });
+  }
+
+  if (btnGrid) {
+    btnGrid.onclick = null;
+    btnGrid.addEventListener('click', function() {
+      gridOn = !gridOn;
+      var col = gridOn ? 'rgba(255,255,255,0.05)' : 'transparent';
+      ChartRegistry.getAll().forEach(function(c) {
+        ['x','y'].forEach(function(a) {
+          if (c.options.scales && c.options.scales[a] && c.options.scales[a].grid) {
+            c.options.scales[a].grid.color = col;
+          }
+        });
+        c.update('none');
+      });
+      this.textContent = '\u229E Grid: ' + (gridOn ? 'ON' : 'OFF');
+    });
+  }
+}
+
+// ─── Per-chart wire functions ────────────────────────────────────────────────
+function wireRawSignal(result) {
+  var chart = ChartRegistry.get('rawSignal');
+  if (!chart || !result.raw_signal || !result.raw_signal.channels) return;
+  var channels = result.raw_signal.channels;
+  var sr = result.meta.sampling_rate;
+  var src = {};
+  channels.forEach(function(ch) { src[String(ch.index)] = ch.analog; });
+  var keys = Object.keys(src);
+  var dur = keys.length > 0 ? src[keys[0]].length / sr : 0;
+
+  function rebuild() {
+    var t0 = (document.getElementById('raw-t-start').value / 100) * dur;
+    var t1 = (document.getElementById('raw-t-end').value / 100) * dur;
+    var i0 = Math.floor(t0 * sr), i1 = Math.ceil(t1 * sr);
+    chart.data.datasets.forEach(function(ds, i) {
+      var key = keys[i];
+      if (key) ds.data = src[key].slice(i0, i1).map(function(v, j) { return {x: t0 + j/sr, y: v}; });
+    });
+    chart.update('none');
+  }
+
+  ['raw-t-start','raw-t-end'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('input', rebuild);
+  });
+
+  var container = document.getElementById('raw-ch-toggles');
+  if (container) {
+    container.innerHTML = '';
+    keys.forEach(function(ch, i) {
+      var lbl = document.createElement('label');
+      lbl.className = 'toggle-label';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = true;
+      cb.onchange = function() { chart.data.datasets[i].hidden = !cb.checked; chart.update('none'); };
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(' Ch' + ch));
+      container.appendChild(lbl);
+    });
+  }
+
+  var offsetEl = document.getElementById('raw-offset');
+  if (offsetEl) {
+    offsetEl.onchange = null;
+    offsetEl.addEventListener('change', function() {
+      var checked = this.checked;
+      chart.data.datasets.forEach(function(ds, i) {
+        var key = keys[i];
+        if (!key) return;
+        ds.data = src[key].map(function(v, j) { return {x: j/sr, y: checked ? v + i*150 : v}; });
+      });
+      chart.update('none');
+    });
+  }
+}
+
+function wireRaster(result) {
+  var chart = ChartRegistry.get('raster');
+  if (!chart) return;
+  var allT = result.spike_times_sec;
+  var allCh = result.spike_ch_idxs;
+  var dur = result.total_duration_sec;
+  var uniqueChs = [...new Set(allCh)].sort(function(a,b){return a-b;});
+  var chToY = {};
+  uniqueChs.forEach(function(c, i) { chToY[c] = i; });
+  var RCOLORS = ['#00ffb4','#ff6450','#64b4ff','#ffdc32','#c864ff','#32ff64','#ffa032','#ff50b4'];
+
+  function rebuild() {
+    var t0 = (document.getElementById('rst-t0').value / 100) * dur;
+    var t1 = (document.getElementById('rst-t1').value / 100) * dur;
+    var sz = parseFloat(document.getElementById('rst-sz').value);
+    var colorBy = document.getElementById('rst-color').value;
+    var pts = allT.map(function(t, i) { return {t:t, ch:allCh[i]}; })
+      .filter(function(p) { return p.t >= t0 && p.t <= t1; })
+      .map(function(p) { return {x:p.t, y:chToY[p.ch], ch:p.ch}; });
+    chart.data.datasets[0].data = pts;
+    chart.data.datasets[0].pointRadius = sz;
+    chart.data.datasets[0].backgroundColor = pts.map(function(p) {
+      if (colorBy === 'channel') return RCOLORS[uniqueChs.indexOf(p.ch) % 8] + 'aa';
+      if (colorBy === 'time') return 'hsla(' + (200 + (p.x/dur)*160) + ',90%,60%,0.7)';
+      return 'rgba(0,255,180,0.6)';
+    });
+    chart.update('none');
+  }
+
+  ['rst-t0','rst-t1','rst-sz','rst-color'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) { el.addEventListener('input', rebuild); el.addEventListener('change', rebuild); }
+  });
+
+  var rasterCanvas = document.getElementById('rasterChart');
+  if (rasterCanvas) {
+    rasterCanvas.addEventListener('click', function(evt) {
+      var pts = chart.getElementsAtEventForMode(evt, 'nearest', {intersect:true}, false);
+      if (!pts.length) return;
+      var p = chart.data.datasets[0].data[pts[0].index];
+      var box = document.getElementById('rst-detail');
+      if (box) { box.textContent = 'Time: ' + p.x.toFixed(4) + 's  Channel: ' + p.ch; box.style.display = 'block'; }
+    });
+  }
+}
+
+function wireNetworkBurst(result) {
+  var chart = ChartRegistry.get('networkBurst');
+  if (!chart) return;
+  var allT = result.spike_times_sec;
+  var dur = result.total_duration_sec;
+
+  function rebuild() {
+    var bin = parseFloat(document.getElementById('nb-bin').value);
+    var sigma = parseFloat(document.getElementById('nb-sigma').value);
+    var smooth = parseInt(document.getElementById('nb-smooth').value);
+    var showThresh = document.getElementById('nb-thresh').checked;
+    var sigmaVal = document.getElementById('nb-sigma-val');
+    if (sigmaVal) sigmaVal.textContent = sigma.toFixed(1);
+
+    var nBins = Math.max(1, Math.ceil(dur / bin));
+    var counts = new Array(nBins).fill(0);
+    allT.forEach(function(t) { var b = Math.min(Math.floor(t/bin), nBins-1); counts[b]++; });
+
+    if (smooth > 1) {
+      counts = counts.map(function(_, i) {
+        var sl = counts.slice(Math.max(0, i - Math.floor(smooth/2)), Math.min(nBins, i + Math.ceil(smooth/2)));
+        return sl.reduce(function(a,b){return a+b;}, 0) / sl.length;
+      });
+    }
+
+    var mean = counts.reduce(function(a,b){return a+b;}, 0) / counts.length;
+    var std = Math.sqrt(counts.map(function(c){return (c-mean)*(c-mean);}).reduce(function(a,b){return a+b;}, 0) / counts.length);
+    var thresh = mean + sigma * std;
+
+    chart.data.labels = counts.map(function(_, i) { return ((i + 0.5) * bin).toFixed(2); });
+    chart.data.datasets[0].data = counts;
+    chart.data.datasets[0].backgroundColor = counts.map(function(c) {
+      return c > thresh ? 'rgba(255,160,50,0.9)' : 'rgba(50,200,180,0.5)';
+    });
+    if (chart.data.datasets[1]) {
+      chart.data.datasets[1].data = showThresh ? counts.map(function(){return thresh;}) : [];
+    }
+    chart.update('none');
+  }
+
+  ['nb-bin','nb-sigma','nb-smooth','nb-thresh'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) { el.addEventListener('input', rebuild); el.addEventListener('change', rebuild); }
+  });
+}
+
+function wirePca(result) {
+  var chart = ChartRegistry.get('pca');
+  if (!chart) return;
+  var pca = result.pca;
+
+  var szEl = document.getElementById('pca-sz');
+  if (szEl) {
+    szEl.addEventListener('input', function() {
+      var sz = parseFloat(this.value);
+      chart.data.datasets.forEach(function(ds) { ds.pointRadius = sz; });
+      chart.update('none');
+    });
+  }
+
+  var opEl = document.getElementById('pca-op');
+  if (opEl) {
+    opEl.addEventListener('input', function() {
+      var op = parseInt(this.value) / 100;
+      var RGBA = [[0,255,180],[255,100,80],[100,180,255],[255,220,50],[200,100,255],[50,255,100],[255,160,50],[255,80,180]];
+      chart.data.datasets.forEach(function(ds, i) {
+        var rgb = RGBA[i % 8];
+        ds.backgroundColor = 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + op + ')';
+      });
+      chart.update('none');
+    });
+  }
+
+  var fc = document.getElementById('pca-ch-filter');
+  if (fc && pca && pca.unique_channels) {
+    fc.innerHTML = '';
+    pca.unique_channels.forEach(function(ch, i) {
+      var lbl = document.createElement('label');
+      lbl.className = 'toggle-label';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = true;
+      cb.onchange = function() { chart.data.datasets[i].hidden = !cb.checked; chart.update('none'); };
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(' Ch' + ch));
+      fc.appendChild(lbl);
+    });
+  }
+}
+
+function wireWaveform(result) {
+  var wfData = result.waveform_data || {};
+  var wfLen = result.waveform_length || 58;
+  var sr = result.meta && result.meta.sampling_rate ? result.meta.sampling_rate : 20000;
+
+  function redraw() {
+    var chEl = document.getElementById('channel-select');
+    var ch = chEl ? chEl.value : null;
+    if (!ch) return;
+    var maxEl = document.getElementById('wf-max');
+    var max = maxEl ? parseInt(maxEl.value) : 50;
+    var showMean = document.getElementById('wf-mean') ? document.getElementById('wf-mean').checked : true;
+    var showStd = document.getElementById('wf-std') ? document.getElementById('wf-std').checked : false;
+    var norm = document.getElementById('wf-norm') ? document.getElementById('wf-norm').checked : false;
+    var maxValEl = document.getElementById('wf-max-val');
+    if (maxValEl) maxValEl.textContent = max;
+
+    var wfs = (wfData[ch] || []).slice(0, max);
+    if (norm) {
+      wfs = wfs.map(function(w) {
+        var pk = Math.max.apply(null, w.map(Math.abs)) || 1;
+        return w.map(function(v) { return v / pk; });
+      });
+    }
+
+    var tAxis = Array.from({length: wfLen}, function(_, i) { return ((i - 20) / sr * 1000); });
+    var datasets = wfs.map(function(w, i) {
+      return {
+        label: i === 0 ? 'Ch' + ch : '',
+        data: w.map(function(v, t) { return {x: tAxis[t], y: v}; }),
+        borderColor: 'rgba(100,180,255,0.25)',
+        borderWidth: 1,
+        pointRadius: 0,
+        fill: false
+      };
+    });
+
+    if (showMean && wfs.length) {
+      var mean = tAxis.map(function(_, t) {
+        return wfs.map(function(w) { return w[t] || 0; }).reduce(function(a,b){return a+b;}, 0) / wfs.length;
+      });
+      datasets.push({label:'Mean', data: mean.map(function(v, t){return {x:tAxis[t],y:v};}),
+        borderColor:'rgba(255,220,50,0.95)', borderWidth:2.5, pointRadius:0, fill:false});
+      if (showStd) {
+        var std = tAxis.map(function(_, t) {
+          var vals = wfs.map(function(w){return w[t]||0;}), m = mean[t];
+          return Math.sqrt(vals.map(function(v){return (v-m)*(v-m);}).reduce(function(a,b){return a+b;},0)/vals.length);
+        });
+        datasets.push({label:'+SD', data: mean.map(function(m,i){return {x:tAxis[i],y:m+std[i]};}),
+          borderColor:'rgba(255,220,50,0.3)', borderWidth:1, pointRadius:0, fill:false, borderDash:[4,2]});
+        datasets.push({label:'-SD', data: mean.map(function(m,i){return {x:tAxis[i],y:m-std[i]};}),
+          borderColor:'rgba(255,220,50,0.3)', borderWidth:1, pointRadius:0, fill:false, borderDash:[4,2]});
+      }
+    }
+
+    var c = ChartRegistry.get('waveform');
+    if (c) { c.data.datasets = datasets; c.update('none'); }
+  }
+
+  ['channel-select','wf-max','wf-mean','wf-std','wf-norm'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) { el.addEventListener('change', redraw); el.addEventListener('input', redraw); }
+  });
+}
+
+// ─── Export functions ─────────────────────────────────────────────────────────
+function exportCSV(name) {
+  var c = ChartRegistry.get(name); if (!c) return;
+  var header = ['label'].concat(c.data.datasets.map(function(d){return d.label||name;}));
+  var maxLen = Math.max.apply(null, c.data.datasets.map(function(d){return d.data ? d.data.length : 0;}));
+  var rows = [header];
+  for (var i = 0; i < maxLen; i++) {
+    var lbl = c.data.labels ? (c.data.labels[i] != null ? c.data.labels[i] : i) : i;
+    var vals = c.data.datasets.map(function(d) {
+      var v = d.data ? d.data[i] : null;
+      if (v == null) return '';
+      return typeof v === 'object' ? (v.x + ',' + v.y) : v;
+    });
+    rows.push([lbl].concat(vals));
+  }
+  var blob = new Blob([rows.map(function(r){return r.join(',');}).join('\n')], {type:'text/csv'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'brainwave_' + name + '_' + Date.now() + '.csv';
+  a.click();
+}
+
+function exportPNG(name) {
+  var c = ChartRegistry.get(name); if (!c) return;
+  var tmp = document.createElement('canvas');
+  tmp.width = c.canvas.width; tmp.height = c.canvas.height;
+  var ctx2 = tmp.getContext('2d');
+  ctx2.fillStyle = '#1a1a2e';
+  ctx2.fillRect(0, 0, tmp.width, tmp.height);
+  ctx2.drawImage(c.canvas, 0, 0);
+  var a = document.createElement('a');
+  a.download = 'brainwave_' + name + '_' + Date.now() + '.png';
+  a.href = tmp.toDataURL('image/png');
+  a.click();
+}
+
+function exportAllCSV() {
+  Object.keys(ChartRegistry.instances).forEach(function(n, i) {
+    setTimeout(function(){exportCSV(n);}, i * 200);
+  });
+}
+
+function exportAllPNG() {
+  Object.keys(ChartRegistry.instances).forEach(function(n, i) {
+    setTimeout(function(){exportPNG(n);}, i * 300);
+  });
+}
+
+async function exportPDF() {
+  var btn = document.getElementById('btn-export-pdf');
+  if (btn) { btn.textContent = '\u23F3 Building PDF...'; btn.disabled = true; }
+  try {
+    var jsPDF = window.jspdf && window.jspdf.jsPDF;
+    if (!jsPDF) throw new Error('jsPDF not loaded');
+    var pdf = new jsPDF({orientation:'portrait', unit:'mm', format:'a4'});
+    var W = pdf.internal.pageSize.getWidth(), M = 12;
+    var r = window._result || {};
+
+    pdf.setFillColor(15, 15, 30); pdf.rect(0, 0, W, 297, 'F');
+    pdf.setTextColor(0, 220, 160); pdf.setFontSize(20);
+    pdf.text('BrainWave HD-MEA Report', M, 28);
+    pdf.setFontSize(10); pdf.setTextColor(180, 180, 180);
+    pdf.text('Generated: ' + new Date().toLocaleString(), M, 40);
+    var meta = r.meta || {};
+    pdf.text('File: ' + (meta.file_type || '?').toUpperCase() + ' | Duration: ' + (r.total_duration_sec || '?') + 's | Channels: ' + (meta.num_channels || '?'), M, 48);
+
+    var names = ['rawSignal','waveform','raster','firingRate','networkBurst','pca'];
+    var titles = ['Raw Signal','Waveform','Raster Plot','Firing Rate','Network Burst','PCA'];
+    for (var i = 0; i < names.length; i++) {
+      var c = ChartRegistry.get(names[i]); if (!c) continue;
+      pdf.addPage();
+      pdf.setFillColor(15, 15, 30); pdf.rect(0, 0, W, 297, 'F');
+      pdf.setTextColor(0, 220, 160); pdf.setFontSize(13);
+      pdf.text(titles[i], M, 16);
+      var tmp = document.createElement('canvas');
+      tmp.width = c.canvas.width * 2; tmp.height = c.canvas.height * 2;
+      var ctx2 = tmp.getContext('2d');
+      ctx2.scale(2, 2);
+      ctx2.fillStyle = '#0f0f1e';
+      ctx2.fillRect(0, 0, c.canvas.width, c.canvas.height);
+      ctx2.drawImage(c.canvas, 0, 0);
+      var cw = W - M * 2, ch = Math.min(cw * (c.canvas.height / c.canvas.width), 230);
+      pdf.addImage(tmp.toDataURL('image/png'), 'PNG', M, 22, cw, ch);
+    }
+    pdf.save('brainwave_report_' + Date.now() + '.pdf');
+  } catch(e) {
+    alert('PDF export failed: ' + e.message);
+  } finally {
+    if (btn) { btn.textContent = '\u2B07 PDF Report'; btn.disabled = false; }
+  }
 }
 
 const PYTHON_PARSER = \`
