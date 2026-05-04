@@ -1576,7 +1576,7 @@ function exportCSV(name) {
     });
     rows.push([lbl].concat(vals));
   }
-  var blob = new Blob([rows.map(function(r){return r.join(',');}).join('\n')], {type:'text/csv'});
+  var blob = new Blob([rows.map(function(r){return r.join(',');}).join('\\n')], {type:'text/csv'});
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'brainwave_' + name + '_' + Date.now() + '.csv';
