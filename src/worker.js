@@ -107,6 +107,43 @@ const HTML = `<!DOCTYPE html>
   @media (max-width: 800px) {
     #charts-grid.visible { grid-template-columns: 1fr; }
   }
+
+  /* ── new chart containers ── */
+  .chart-container {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px;
+  }
+
+  .chart-header {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 8px;
+  }
+
+  .chart-header h3 {
+    margin: 0 0 2px 0;
+    font-size: 0.95rem;
+    color: #e0e0e0;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+  }
+
+  .chart-subtitle {
+    font-size: 0.75rem;
+    color: #888;
+    font-style: italic;
+  }
+
+  /* Network burst legend pill for burst bins */
+  .burst-legend {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    background: rgba(255, 160, 50, 0.9);
+    border-radius: 2px;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
 </style>
 </head>
 <body>
@@ -174,6 +211,39 @@ const HTML = `<!DOCTYPE html>
     <div class="chart-card" id="card-raw"      style="display:none"><h3>Raw Signal</h3><div class="chart-wrap"><canvas id="chart-raw"></canvas></div></div>
     <div class="chart-card" id="card-raster"   style="display:none"><h3>Spike Raster (0 – 10 s)</h3><div class="chart-wrap"><canvas id="chart-raster"></canvas></div></div>
     <div class="chart-card" id="card-waveform" style="display:none"><h3>Spike Waveforms</h3><div class="chart-wrap"><canvas id="chart-waveform"></canvas></div></div>
+
+    <!-- NEW CHARTS - add after existing chart canvases -->
+    <div class="chart-container" id="raster-container" style="display:none">
+      <div class="chart-header">
+        <h3>Spike Raster Plot</h3>
+        <span class="chart-subtitle">Each dot = one spike event</span>
+      </div>
+      <canvas id="rasterChart"></canvas>
+    </div>
+
+    <div class="chart-container" id="firing-rate-container" style="display:none">
+      <div class="chart-header">
+        <h3>Mean Firing Rate</h3>
+        <span class="chart-subtitle">Spikes per second (Hz) per channel</span>
+      </div>
+      <canvas id="firingRateChart"></canvas>
+    </div>
+
+    <div class="chart-container" id="network-burst-container" style="display:none">
+      <div class="chart-header">
+        <h3>Network Burst Frequency</h3>
+        <span class="chart-subtitle">Population spike rate in 100ms bins</span>
+      </div>
+      <canvas id="networkBurstChart"></canvas>
+    </div>
+
+    <div class="chart-container" id="pca-container" style="display:none">
+      <div class="chart-header">
+        <h3>Spike Waveform PCA</h3>
+        <span id="pca-subtitle" class="chart-subtitle">PC1 vs PC2 — colored by channel</span>
+      </div>
+      <canvas id="pcaChart"></canvas>
+    </div>
   </div>
 </main>
 
@@ -278,9 +348,17 @@ async function handleFile(file) {
   controls.classList.remove('visible');
   chartsGrid.classList.remove('visible');
   [cardRaw, cardRaster, cardWaveform].forEach(c => c.style.display = 'none');
+  ['raster-container', 'firing-rate-container', 'network-burst-container', 'pca-container'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
   destroyChart(rawChart);      rawChart      = null;
   destroyChart(rasterChart);   rasterChart   = null;
   destroyChart(waveformChart); waveformChart = null;
+  if (window.rasterChartInstance)     { window.rasterChartInstance.destroy();     window.rasterChartInstance     = null; }
+  if (window.firingRateChartInstance) { window.firingRateChartInstance.destroy(); window.firingRateChartInstance = null; }
+  if (window.networkBurstChartInstance) { window.networkBurstChartInstance.destroy(); window.networkBurstChartInstance = null; }
+  if (window.pcaChartInstance)        { window.pcaChartInstance.destroy();        window.pcaChartInstance        = null; }
 
   const ext = file.name.split('.').pop().toLowerCase();
   if (ext !== 'brw' && ext !== 'bxr') {
@@ -398,6 +476,19 @@ function renderCharts(d) {
       renderWaveformChart(d.spike_waveforms, parseInt(channelSel.value, 10), d.meta.sampling_rate);
     };
   }
+
+  if (d.meta && d.meta.file_type === 'BXR') {
+    renderRasterPlot(d);
+    renderFiringRateChart(d);
+    renderNetworkBurstChart(d);
+    renderPcaChart(d);
+  }
+
+  ['raster-container', 'firing-rate-container',
+   'network-burst-container', 'pca-container'].forEach(function(id) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = (d.meta && d.meta.file_type === 'BXR') ? 'block' : 'none';
+  });
 }
 
 function rawChartDatasets(rawSignal, samplingRate, startSec) {
@@ -550,6 +641,317 @@ function renderWaveformChart(spikeWaveforms, chIdx, samplingRate) {
 }
 
 // ─── Python parser (runs in Pyodide) ────────────────────────────────────────
+
+function renderRasterPlot(result) {
+  const ctx = document.getElementById('rasterChart').getContext('2d');
+
+  const spikeTimes = result.spike_times_sec;
+  const spikeChIdxs = result.spike_ch_idxs;
+  const uniqueChannels = [...new Set(spikeChIdxs)].sort((a, b) => a - b);
+
+  // Map each channel to a y-axis position (0 = bottom channel)
+  const chToY = {};
+  uniqueChannels.forEach((ch, i) => { chToY[ch] = i; });
+
+  // Build scatter dataset — one point per spike
+  const points = spikeTimes.map((t, i) => ({
+    x: t,
+    y: chToY[spikeChIdxs[i]]
+  }));
+
+  // Limit to 2000 points for performance (browser scatter rendering slows above this)
+  const MAX_RASTER_POINTS = 2000;
+  const displayPoints = points.length > MAX_RASTER_POINTS
+    ? points.filter((_, i) => i % Math.ceil(points.length / MAX_RASTER_POINTS) === 0)
+    : points;
+
+  if (window.rasterChartInstance) window.rasterChartInstance.destroy();
+  window.rasterChartInstance = new Chart(ctx, {
+    type: 'scatter',
+    data: {
+      datasets: [{
+        label: 'Spike',
+        data: displayPoints,
+        pointRadius: 1.5,
+        pointHoverRadius: 4,
+        backgroundColor: 'rgba(0, 255, 180, 0.6)',
+        borderColor: 'rgba(0, 255, 180, 0.8)',
+        borderWidth: 0
+      }]
+    },
+    options: {
+      responsive: true,
+      animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => 'Time: ' + ctx.parsed.x.toFixed(3) + 's  Ch: ' + uniqueChannels[ctx.parsed.y]
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: { display: true, text: 'Time (s)', color: '#aaa' },
+          ticks: { color: '#aaa' },
+          grid: { color: 'rgba(255,255,255,0.05)' }
+        },
+        y: {
+          title: { display: true, text: 'Channel', color: '#aaa' },
+          ticks: {
+            color: '#aaa',
+            callback: val => uniqueChannels[Math.round(val)] !== undefined
+              ? 'Ch ' + uniqueChannels[Math.round(val)]
+              : ''
+          },
+          grid: { color: 'rgba(255,255,255,0.05)' },
+          min: -0.5,
+          max: uniqueChannels.length - 0.5
+        }
+      }
+    }
+  });
+}
+
+function renderFiringRateChart(result) {
+  const ctx = document.getElementById('firingRateChart').getContext('2d');
+
+  const labels = result.firing_rate_labels;
+  const values = result.firing_rate_values;
+
+  // Color bars by firing rate intensity (low=blue, high=red) using gradient
+  const maxRate = Math.max(...values);
+  const barColors = values.map(v => {
+    const ratio = maxRate > 0 ? v / maxRate : 0;
+    const r = Math.round(50 + ratio * 205);
+    const g = Math.round(150 - ratio * 100);
+    const b = Math.round(255 - ratio * 200);
+    return 'rgba(' + r + ', ' + g + ', ' + b + ', 0.85)';
+  });
+
+  if (window.firingRateChartInstance) window.firingRateChartInstance.destroy();
+  window.firingRateChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'Firing Rate (Hz)',
+        data: values,
+        backgroundColor: barColors,
+        borderColor: barColors.map(c => c.replace('0.85', '1')),
+        borderWidth: 1,
+        borderRadius: 3
+      }]
+    },
+    options: {
+      responsive: true,
+      animation: { duration: 600 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ctx.parsed.y.toFixed(2) + ' Hz'
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: { display: true, text: 'Channel', color: '#aaa' },
+          ticks: {
+            color: '#aaa',
+            maxRotation: 45,
+            // Show every Nth label to avoid crowding
+            callback: (val, i) => i % Math.ceil(labels.length / 20) === 0
+              ? labels[i]
+              : ''
+          },
+          grid: { color: 'rgba(255,255,255,0.05)' }
+        },
+        y: {
+          title: { display: true, text: 'Firing Rate (Hz)', color: '#aaa' },
+          ticks: { color: '#aaa' },
+          grid: { color: 'rgba(255,255,255,0.05)' },
+          beginAtZero: true
+        }
+      }
+    }
+  });
+}
+
+function renderNetworkBurstChart(result) {
+  const ctx = document.getElementById('networkBurstChart').getContext('2d');
+  const nb = result.network_burst;
+
+  // Color each bar: burst bins = bright orange, normal bins = dim teal
+  const barColors = nb.spike_counts.map((count, i) =>
+    nb.is_burst[i]
+      ? 'rgba(255, 160, 50, 0.9)'
+      : 'rgba(50, 200, 180, 0.5)'
+  );
+
+  // Threshold line dataset
+  const thresholdLine = nb.bin_centers_sec.map(() => nb.burst_threshold);
+
+  if (window.networkBurstChartInstance) window.networkBurstChartInstance.destroy();
+  window.networkBurstChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: nb.bin_centers_sec.map(t => t.toFixed(2)),
+      datasets: [
+        {
+          label: 'Spike Count',
+          data: nb.spike_counts,
+          backgroundColor: barColors,
+          borderColor: barColors,
+          borderWidth: 0,
+          borderRadius: 2,
+          order: 2
+        },
+        {
+          label: 'Burst Threshold (' + nb.burst_threshold.toFixed(1) + ')',
+          data: thresholdLine,
+          type: 'line',
+          borderColor: 'rgba(255, 80, 80, 0.9)',
+          borderWidth: 2,
+          borderDash: [6, 3],
+          pointRadius: 0,
+          fill: false,
+          tension: 0,
+          order: 1
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      animation: false,
+      plugins: {
+        legend: {
+          display: true,
+          labels: { color: '#ccc', boxWidth: 16, padding: 12 }
+        },
+        tooltip: {
+          callbacks: {
+            title: items => 'Time: ' + items[0].label + 's',
+            label: ctx => ctx.datasetIndex === 0
+              ? 'Spikes: ' + ctx.parsed.y
+              : 'Threshold: ' + ctx.parsed.y.toFixed(1)
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: { display: true, text: 'Time (s)', color: '#aaa' },
+          ticks: {
+            color: '#aaa',
+            maxRotation: 0,
+            callback: (val, i) => i % Math.ceil(nb.bin_centers_sec.length / 10) === 0
+              ? nb.bin_centers_sec[i].toFixed(1)
+              : ''
+          },
+          grid: { color: 'rgba(255,255,255,0.05)' }
+        },
+        y: {
+          title: { display: true, text: 'Spike Count / 100ms', color: '#aaa' },
+          ticks: { color: '#aaa' },
+          grid: { color: 'rgba(255,255,255,0.05)' },
+          beginAtZero: true
+        }
+      }
+    }
+  });
+}
+
+function renderPcaChart(result) {
+  if (!result.pca) return;
+  const ctx = document.getElementById('pcaChart').getContext('2d');
+  const pca = result.pca;
+
+  // Update subtitle with variance explained
+  if (pca.pc1_variance_pct > 0) {
+    document.getElementById('pca-subtitle').textContent =
+      'PC1 (' + pca.pc1_variance_pct + '%) vs PC2 (' + pca.pc2_variance_pct + '%) \u2014 colored by channel \u2014 ' + pca.n_spikes_used + ' spikes';
+  }
+
+  // 8 distinct neon colors for channel groups
+  const PCA_COLORS = [
+    'rgba(0,   255, 180, 0.75)',  // teal
+    'rgba(255, 100,  80, 0.75)',  // coral
+    'rgba(100, 180, 255, 0.75)',  // sky blue
+    'rgba(255, 220,  50, 0.75)',  // yellow
+    'rgba(200, 100, 255, 0.75)',  // purple
+    'rgba(50,  255, 100, 0.75)',  // green
+    'rgba(255, 160,  50, 0.75)',  // orange
+    'rgba(255,  80, 180, 0.75)',  // pink
+  ];
+
+  // Group points by color_id to create one dataset per channel group
+  // This allows Chart.js legend to show channel groups
+  const groupedDatasets = {};
+  pca.pc1.forEach((x, i) => {
+    const colorId = pca.color_ids[i];
+    const chIdx = pca.channel_idxs[i];
+    if (!groupedDatasets[colorId]) {
+      groupedDatasets[colorId] = {
+        label: 'Ch ' + (pca.unique_channels[colorId] ?? colorId),
+        data: [],
+        backgroundColor: PCA_COLORS[colorId % 8],
+        pointRadius: 3,
+        pointHoverRadius: 6
+      };
+    }
+    groupedDatasets[colorId].data.push({ x, y: pca.pc2[i], chIdx });
+  });
+
+  if (window.pcaChartInstance) window.pcaChartInstance.destroy();
+  window.pcaChartInstance = new Chart(ctx, {
+    type: 'scatter',
+    data: { datasets: Object.values(groupedDatasets) },
+    options: {
+      responsive: true,
+      animation: false,
+      plugins: {
+        legend: {
+          display: true,
+          labels: { color: '#ccc', boxWidth: 12, padding: 10, pointStyle: 'circle' }
+        },
+        tooltip: {
+          callbacks: {
+            label: ctx => [
+              'Ch: ' + ctx.raw.chIdx,
+              'PC1: ' + ctx.parsed.x.toFixed(3),
+              'PC2: ' + ctx.parsed.y.toFixed(3)
+            ]
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: {
+            display: true,
+            text: pca.pc1_variance_pct > 0
+              ? 'PC1 (' + pca.pc1_variance_pct + '% variance)'
+              : 'PC1',
+            color: '#aaa'
+          },
+          ticks: { color: '#aaa' },
+          grid: { color: 'rgba(255,255,255,0.05)' }
+        },
+        y: {
+          title: {
+            display: true,
+            text: pca.pc2_variance_pct > 0
+              ? 'PC2 (' + pca.pc2_variance_pct + '% variance)'
+              : 'PC2',
+            color: '#aaa'
+          },
+          ticks: { color: '#aaa' },
+          grid: { color: 'rgba(255,255,255,0.05)' }
+        }
+      }
+    }
+  });
+}
+
 const PYTHON_PARSER = \`
 import io, json, traceback, base64
 import numpy as np
@@ -656,6 +1058,96 @@ def parse_file():
                         analog_wf = (offset + wf.astype(float) * conv_factor).tolist()
                         waveforms_by_ch[ch].append(analog_wf)
             result['spike_waveforms'] = waveforms_by_ch
+
+            # ── RASTER PLOT DATA ──────────────────────────────────────────────────────
+            # spike_times_sec already computed above as a list
+            spike_times_sec_out = spike_times_sec
+            spike_ch_idxs_out = spike_ch_idxs.tolist()
+
+            # ── MEAN FIRING RATE PER CHANNEL ─────────────────────────────────────────
+            total_duration_sec = duration_sec if (duration_sec is not None and duration_sec > 0) else 1.0
+            stored_ch_arr = np.array(stored_ch_idxs, dtype=np.int64)
+            firing_rates = {}
+            for ch_val in stored_ch_arr:
+                ch_val = int(ch_val)
+                count = int(np.sum(spike_ch_idxs == ch_val))
+                firing_rates[ch_val] = round(count / total_duration_sec, 4)
+
+            sorted_channels = sorted(firing_rates.keys(), key=lambda c: firing_rates[c], reverse=True)
+            firing_rate_labels = ["Ch " + str(c) for c in sorted_channels]
+            firing_rate_values = [firing_rates[c] for c in sorted_channels]
+
+            # ── NETWORK BURST FREQUENCY ───────────────────────────────────────────────
+            bin_size_sec = 0.1
+            n_bins = max(1, int(np.ceil(total_duration_sec / bin_size_sec)))
+            bin_edges = np.linspace(0, total_duration_sec, n_bins + 1)
+            bin_centers = ((bin_edges[:-1] + bin_edges[1:]) / 2).tolist()
+            spike_times_arr = spike_times_frames.astype(float) / sampling_rate if sampling_rate > 0 else spike_times_frames.astype(float)
+            counts_per_bin, _ = np.histogram(spike_times_arr, bins=bin_edges)
+            mean_count = float(np.mean(counts_per_bin))
+            std_count = float(np.std(counts_per_bin))
+            # 2-sigma threshold: bins above mean + 2*std are classified as network bursts
+            burst_threshold = mean_count + 2 * std_count
+            is_burst = (counts_per_bin > burst_threshold).tolist()
+            network_burst_data = {
+                "bin_centers_sec": bin_centers,
+                "spike_counts": counts_per_bin.tolist(),
+                "burst_threshold": round(burst_threshold, 2),
+                "mean_count": round(mean_count, 2),
+                "is_burst": is_burst,
+                "bin_size_sec": bin_size_sec
+            }
+
+            # ── PCA PLOT ───────────────────────────────────────────────────────────────
+            # Use up to 500 waveforms for computational efficiency and memory constraints
+            pca_data = None
+            if spike_forms_raw is not None and spike_forms_raw.ndim == 2 and num_spikes > 1:
+                n_usable = min(num_spikes, 500)
+                waveforms = spike_forms_raw[:n_usable].astype(np.float32)
+                waveform_ch_idxs_pca = spike_ch_idxs[:n_usable]
+                waveforms_uv = offset + conv_factor * waveforms
+                waveforms_norm = waveforms_uv - waveforms_uv.mean(axis=1, keepdims=True)
+                norms = waveforms_norm.std(axis=1, keepdims=True)
+                norms[norms == 0] = 1.0
+                waveforms_norm = waveforms_norm / norms
+                data_centered = waveforms_norm - waveforms_norm.mean(axis=0)
+                try:
+                    U, S, Vt = np.linalg.svd(data_centered.astype(np.float32), full_matrices=False)
+                    pc1 = (data_centered @ Vt[0]).tolist()
+                    pc2 = (data_centered @ Vt[1]).tolist()
+                    explained_var_ratio = (S**2 / np.sum(S**2))[:2]
+                    pc1_var = round(float(explained_var_ratio[0]) * 100, 1)
+                    pc2_var = round(float(explained_var_ratio[1]) * 100, 1)
+                except Exception:
+                    wl = waveforms_norm.shape[1]
+                    pc1 = waveforms_norm[:, min(20, wl - 1)].tolist()
+                    pc2 = waveforms_norm[:, min(29, wl - 1)].tolist()
+                    pc1_var = 0.0
+                    pc2_var = 0.0
+                unique_ch = sorted(set(int(c) for c in waveform_ch_idxs_pca))
+                ch_to_color_id = {ch: i % 8 for i, ch in enumerate(unique_ch)}
+                color_ids = [ch_to_color_id[int(c)] for c in waveform_ch_idxs_pca]
+                pca_data = {
+                    "pc1": pc1,
+                    "pc2": pc2,
+                    "channel_idxs": [int(c) for c in waveform_ch_idxs_pca],
+                    "color_ids": color_ids,
+                    "pc1_variance_pct": pc1_var,
+                    "pc2_variance_pct": pc2_var,
+                    "n_spikes_used": n_usable,
+                    "unique_channels": unique_ch
+                }
+
+            result.update({
+                "spike_times_sec": spike_times_sec_out,
+                "spike_ch_idxs": spike_ch_idxs_out,
+                "firing_rate_labels": firing_rate_labels,
+                "firing_rate_values": firing_rate_values,
+                "total_duration_sec": round(total_duration_sec, 2),
+                "network_burst": network_burst_data,
+            })
+            if pca_data is not None:
+                result["pca"] = pca_data
 
         # ════════════════════════════════════════════════════════════════
         # BRW path
